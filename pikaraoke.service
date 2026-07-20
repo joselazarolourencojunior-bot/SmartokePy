@@ -1,0 +1,14 @@
+[Unit]
+Description=Servico do PiKaraoke SmartokePy
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi
+ExecStart=/home/pi/.local/bin/pikaraoke --logo-path /home/pi/.local/lib/python3.13/site-packages/pikaraoke/static/images/logo.png
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

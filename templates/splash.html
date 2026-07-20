@@ -1,0 +1,352 @@
+{% extends 'base.html' %} {% block scripts %}
+<link
+  rel="stylesheet"
+  href="{{  url_for('static', filename='screensaver.css') }}"
+/>
+<link
+  rel="stylesheet"
+  href="{{  url_for('static', filename='score.css') }}"
+/>
+<script src="{{ url_for('static', filename='js/subtitles-octopus.js') }}"></script>
+<script>
+  // Use this config object to pass data from the jinja2 template to the splash.js code
+  const PikaraokeConfig = {
+    hasBgVideo: "{{ has_bg_video }}" == 'True',
+    disableScore: "{{ disable_score }}" == 'True',
+    bgMusicVolume: "{{ bg_music_volume }}" * 1,
+    disableBgMusic: "{{ disable_bg_music }}" == 'True',
+    disableBgVideo: "{{ disable_bg_video }}" == 'True',
+    showSplashClock: "{{ show_splash_clock }}" == 'True',
+    screensaverTimeout: parseInt('{{ screensaver_timeout }}') || 0,
+    hideOverlay: "{{ hide_overlay }}" == 'True',
+    translations: {
+      socketConnectionLost: "{{ _('Connection lost. Is the server still running?') }}",
+      unsupportedBrowser: "{{ _('This browser is not fully supported. You may experience streaming issues. Please use Chrome/Safari/Firefox/Edge for best results.') }}",
+    },
+    scorePhrasesUrl: "{{ url_for('splash.get_score_phrases') }}",
+  };
+</script>
+<script src="{{ url_for('static', filename='js/splash.js') }}"></script>
+{% endblock %} {% block body %}
+<div id="top-container" class="overlay">
+<i class="icon icon-mic-1 is-invisible" style="position: absolute" title="Current singer"></i>
+  <div
+    id="now-playing"
+    class="has-text-warning stroke is-size-4 has-text-right"
+    style="display: none"
+  >
+    <p
+      id="now-playing-song"
+      class="has-text-white"
+      style="margin-bottom: 5px"
+    ></p>
+    <div class="has-text-success">
+		</span><i class="icon icon-mic-1" title="Current singer"></i>
+      <span id="now-playing-singer"></span>
+		<br />
+		<span class="timestamp is-size-6">
+        <span id="current">00:00</span>
+		  <span id="duration">/00:00</span>
+		</span>
+    </div>
+  </div>
+</div>
+
+<div id="logo-container">
+  <div>
+    <img class="logo" src="{{ url_for('images.logo') }}" width="500px" alt="logo" />
+  </div>
+</div>
+
+<div id="ap-container" class="overlay">
+  <div id="clock" class="stroke has-text-white is-size-4" style="display: none;"></div>
+  <div class="is-size-6 stroke">
+    <div id="hostap">
+      {% for line in hostap_info %}{{ line }}<br />{% endfor %}
+    </div>
+  </div>
+</div>
+
+<div id="bottom-container" class="overlay">
+  <div id="qr-code"{% if hide_url %} style="display: none"{% endif %}>
+    <img
+      src="{{ url_for('images.qrcode') }}"
+      width="100px"
+      style="image-rendering: pixelated"
+      alt="qrcode"
+    />
+    <div class="is-size-6 stroke">
+      <div>&nbsp;{{ url }}</div>
+    </div>
+  </div>
+  <div></div>
+  <div
+    id="up-next"
+    class="has-text-warning is-size-5 stroke has-text-right"
+    style="display: none"
+  >
+    <b class="has-text-white"
+      >{# MSG: Label for the next song to be played in the queue. #} {% trans
+      %}Up next:{% endtrans %}
+    </b>
+    <span id="up-next-song"></span>
+    <div class="has-text-success">
+      <b class="has-text-white"
+        >{# MSG: Label for the next singer in the queue. #}
+        {% trans %}Next singer:{% endtrans %} </b
+      >&nbsp;<i class="icon icon-mic-1" title="Next singer"></i
+      ><span id="up-next-singer"></span>
+    </div>
+  </div>
+</div>
+
+<div id="video-container" class="video-container">
+  <video id="video" poster="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" disableRemotePlayback playsinline webkit-playsinline style="width: 100%; height: 100%; object-fit: contain;">
+    <source id="video-source" src="" />
+  </video>
+</div>
+
+<div id="bg-video-container" class="video-container">
+  <video id="bg-video" poster="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" disableRemotePlayback playsinline webkit-playsinline muted loop style="object-fit: cover">
+    <source id="bg-video-source" type="video/mp4" src="" />
+  </video>
+</div>
+
+<div id="score" style="display: none">
+	<div id="your-score-text">
+    {# MSG: The title of the score screen, telling the user their singing score #}
+		{% trans %}Your Score{% endtrans %}
+	</div>
+	<div id="score-number-text">
+	</div>
+	<div id="score-review-text">
+	</div>
+	<canvas id="fireworks"></canvas>
+</div>
+
+<div id="permissions-modal" class="modal">
+  <div class="modal-background"></div>
+  <div class="modal-content p-3" id="permissions-modal-content" >
+    <p>
+      {# MSG: Prompt for interaction in order to enable video autoplay. #} {%
+      trans %}Due to limitations with browser permissions, you must interact
+      with the page once before it allows autoplay of videos. Pikaraoke will not
+      play otherwise. Click the button below to
+      <a onClick="handleConfirmation()">confirm</a>.{% endtrans %}
+    </p>
+    <div class="has-text-centered mt-4">
+      <button
+        id="permissions-button"
+        class="button is-success is-large"
+        style="margin-top: 10px"
+        onClick="handleConfirmation()"
+      >
+        {# MSG: Button to confirm to enable video autoplay. #}
+        {% trans %}Confirm{% endtrans %}
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="menu">
+  <a
+    role="button"
+    class="navbar-burger"
+    aria-label="menu"
+    aria-expanded="false"
+    data-target="navbarBasicExample"
+    style="display: block; width: 20px; height: 30px"
+  >
+    <span aria-hidden="true"></span>
+    <span aria-hidden="true"></span>
+    <span aria-hidden="true"></span>
+  </a>
+</div>
+
+  <div id="menu-background" class="overlay"></div>
+   <div id="menu-container" class="">
+     <iframe></iframe>
+   </div>
+
+
+<div
+  id="splash-notification"
+  class="notification overlay"
+  style="display: none; border: 2px solid black;"
+></div>
+
+<div class="fw-fh-container">
+  <div id="screensaver" style="visibility: hidden">
+    <div id="dvd">
+      <div id="screensaver-qr"{% if hide_url %} style="display: none"{% endif %}>
+        <div style="text-align: right">
+          <img src="{{ url_for('images.qrcode') }}" width="30%" height="30%" />
+        </div>
+        <div>{{ hostap_info[0] }}<br />{{ url }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<audio id="background-music">
+  <source src="" type="audio/mpeg">
+</audio>
+
+<audio id="score-drums">
+	<source
+	  src="{{  url_for('static', filename='sounds/score-drums.mp3') }}"
+	  type="audio/mp3"
+	/>
+</audio>
+
+<script src="{{  url_for('static', filename='hls-1.6.15.min.js') }}"></script>
+<script src="{{  url_for('static', filename='screensaver.js') }}"></script>
+<script src="{{  url_for('static', filename='fireworks.js') }}"></script>
+<script src="{{  url_for('static', filename='score.js') }}"></script>
+
+<style>
+  html {
+    overflow-y: hidden;
+  }
+  body {
+    background-color: black;
+  }
+  #top-container,
+  #ap-container,
+  #bottom-container {
+    position: absolute;
+    z-index: 1;
+    padding: 10px 20px;
+  }
+  #top-container {
+    top: 0px;
+    right: 0px;
+    max-width: 75%;
+  }
+  #ap-container {
+    top: 0px;
+    left: 0px;
+    max-width: 50%;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  #bottom-container {
+    bottom: 0px;
+    left: 0px;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  #qr-code {
+    max-width: 25%;
+  }
+  #up-next {
+    max-width: 75%;
+  }
+  .video-container {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: black;
+    display: flex;
+    align-items: center;
+  }
+  #bg-video-container {
+    z-index: 0;
+    width: 100vw;
+    height: 100vh;
+  }
+  video {
+    height: 100%;
+    width: 100%;
+    object-fit: contain;
+  }
+  body {
+    background-color: black;
+  }
+  .fw-fh-container {
+    height: 100vh;
+    width: 100vw;
+  }
+  #logo-container {
+    position: absolute;
+    z-index: 1;
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    align-items: center;
+    justify-content: center;
+  }
+  #menu-background {
+    bottom: 0;
+    left: 0;
+    position: absolute;
+    right: 0;
+    top: 0;
+	 width: 100vw;
+	 height: 100vh;
+  }
+  #menu {
+    position: absolute;
+    z-index: 5;
+    top: 10px;
+    left: 20px;
+  }
+  #clock {
+    text-align: left;
+    font-family: monospace;
+    font-weight: bold;
+    line-height: 1;
+    margin-bottom: 10px;
+  }
+  #menu-container {
+    position: absolute;
+    z-index: 3;
+    top: 40px;
+    left: 20px;
+    display: none;
+    overflow: hidden;
+  }
+  #menu-container iframe {
+    width: 600px;
+    height: 75vh;
+  }
+  @media (max-width: 650px) {
+    #menu-container iframe {
+      width: 90vw;
+    }
+  }
+  .visible {
+    visibility: visible;
+    opacity: 1;
+    transition: opacity 0.5s linear;
+  }
+  .hidden {
+    visibility: hidden;
+    opacity: 0;
+    transition: visibility 0s 0.5s, opacity 0.5s linear;
+  }
+  .overlay {
+    z-index: 3 !important;
+  }
+  .stroke {
+    text-shadow: 2px 0.75px black;
+  }
+  .timestamp {
+    font-family: monospace;
+  }
+  #splash-notification {
+    position: absolute;
+    top: 15px;
+    left: 50px;
+    z-index: 6;
+    padding: 5px 10px;
+    max-width: 450px;
+  }
+</style>
+
+{% endblock %}

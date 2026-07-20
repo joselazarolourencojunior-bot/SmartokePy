@@ -1,0 +1,122 @@
+"""System information and settings page route."""
+
+import flask_babel
+import psutil
+from flask import jsonify, render_template
+from flask_smorest import Blueprint
+
+from pikaraoke import VERSION
+from pikaraoke.constants import ITUNES_COUNTRIES, LANGUAGES
+from pikaraoke.lib.current_app import (
+    get_admin_password,
+    get_karaoke_instance,
+    get_site_name,
+    is_admin,
+)
+from pikaraoke.lib.get_platform import get_platform, is_linux
+
+_ = flask_babel.gettext
+
+
+info_bp = Blueprint("info", __name__)
+
+
+@info_bp.route("/info")
+def info():
+    """System information and settings page."""
+    k = get_karaoke_instance()
+    site_name = get_site_name()
+    url = k.url
+    admin_password = get_admin_password()
+    is_linux_platform = is_linux()
+
+    preferred_language = k.preferences.get("preferred_language", "en")
+    itunes_search_country = k.preferences.get_or_default("itunes_search_country")
+    # yt-dlp
+    youtubedl_version = k.youtubedl_version
+
+    return render_template(
+        "info.html",
+        site_title=site_name,
+        title="Info",
+        url=url,
+        admin=is_admin(),
+        admin_password=admin_password,
+        platform=k.platform,
+        os_version=k.os_version,
+        ffmpeg_version=k.ffmpeg_version,
+        is_transpose_enabled=k.is_transpose_enabled,
+        youtubedl_version=youtubedl_version,
+        pikaraoke_version=VERSION,
+        cpu=None,
+        memory=None,
+        disk=None,
+        is_pi=k.is_raspberry_pi,
+        is_linux=is_linux_platform,
+        volume=int(k.volume * 100),
+        bg_music_volume=int(k.bg_music_volume * 100),
+        disable_bg_music=k.disable_bg_music,
+        disable_bg_video=k.disable_bg_video,
+        disable_score=k.disable_score,
+        hide_notifications=k.hide_notifications,
+        show_splash_clock=k.show_splash_clock,
+        hide_url=k.hide_url,
+        hide_overlay=k.hide_overlay,
+        screensaver_timeout=k.screensaver_timeout,
+        splash_delay=k.splash_delay,
+        normalize_audio=k.normalize_audio,
+        cdg_pixel_scaling=k.cdg_pixel_scaling,
+        high_quality=k.high_quality,
+        complete_transcode_before_play=k.complete_transcode_before_play,
+        avsync=k.avsync,
+        limit_user_songs_by=k.limit_user_songs_by,
+        enable_fair_queue=k.enable_fair_queue,
+        buffer_size=k.buffer_size,
+        languages=LANGUAGES,
+        preferred_language=preferred_language,
+        itunes_countries=ITUNES_COUNTRIES,
+        itunes_search_country=itunes_search_country,
+        browse_results_per_page=k.browse_results_per_page,
+        enable_title_tidy=k.enable_title_tidy,
+        score_phrases={
+            "low": k.low_score_phrases,
+            "mid": k.mid_score_phrases,
+            "high": k.high_score_phrases,
+        },
+        mic_available=k.sound_manager.available,
+        mic_passthrough_enabled=k.enable_mic_passthrough,
+    )
+
+
+@info_bp.route("/info/stats")
+def get_system_stats():
+    """Get system statistics (CPU, Memory, Disk).
+
+    Returns:
+        JSON response with system stats.
+    """
+    if not is_admin():
+        return jsonify({"error": "Unauthorized"}), 403
+
+    # cpu
+    try:
+        # We can afford to block a bit here since it is async
+        cpu = str(psutil.cpu_percent(interval=1)) + "%"
+    except:
+        cpu = _("CPU usage query unsupported")
+
+    # mem
+    memory = psutil.virtual_memory()
+    available = round(memory.available / 1024.0 / 1024.0, 1)
+    total = round(memory.total / 1024.0 / 1024.0, 1)
+    memory_str = (
+        str(available) + "MB free / " + str(total) + "MB total ( " + str(memory.percent) + "% )"
+    )
+
+    # disk
+    disk = psutil.disk_usage("/")
+    free = round(disk.free / 1024.0 / 1024.0 / 1024.0, 1)
+    total = round(disk.total / 1024.0 / 1024.0 / 1024.0, 1)
+    disk_str = str(free) + "GB free / " + str(total) + "GB total ( " + str(disk.percent) + "% )"
+
+    return jsonify({"cpu": cpu, "memory": memory_str, "disk": disk_str})
