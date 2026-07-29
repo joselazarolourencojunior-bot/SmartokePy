@@ -3,13 +3,104 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
+import unicodedata
 
 from pikaraoke.lib.get_platform import get_installed_js_runtime
 
 yt_dlp_cmd = [sys.executable, "-m", "yt_dlp"]
+
+_SEARCH_KARAOKE_KEYWORDS = (
+    "karaoke",
+    "karaokê",
+    "playback",
+    "instrumental",
+    "karafun",
+    "minus one",
+    "minusone",
+    "sem voz",
+    "videoke",
+    "backing track",
+    "backing vocal",
+    "no vocal",
+    "off vocal",
+)
+
+_SEARCH_NEGATIVE_KEYWORDS = (
+    "official video",
+    "official music video",
+    "official audio",
+    "audio oficial",
+    "ao vivo",
+    "live",
+    "cover",
+    "reaction",
+    "entrevista",
+    "podcast",
+)
+
+
+def _normalize_search_text(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _build_search_query(query: str, karaoke_only: bool) -> str:
+    query = query.strip()
+    if not karaoke_only:
+        return query
+
+    # Strengthen the query so yt-dlp already brings candidates closer to karaoke/playback.
+    return f"{query} karaoke playback instrumental"
+
+
+def _score_search_result(title: str, channel: str, query: str, karaoke_only: bool) -> int:
+    score = 0
+    title_norm = _normalize_search_text(title)
+    channel_norm = _normalize_search_text(channel)
+    query_norm = _normalize_search_text(query)
+
+    if query_norm and query_norm in title_norm:
+        score += 12
+
+    query_tokens = [token for token in re.split(r"[^a-z0-9]+", query_norm) if len(token) > 1]
+    if query_tokens:
+        token_hits = sum(1 for token in query_tokens if token in title_norm)
+        score += token_hits * 3
+
+    for keyword in _SEARCH_KARAOKE_KEYWORDS:
+        keyword_norm = _normalize_search_text(keyword)
+        if keyword_norm in title_norm:
+            score += 20
+        if keyword_norm in channel_norm:
+            score += 6
+
+    if karaoke_only:
+        for keyword in _SEARCH_NEGATIVE_KEYWORDS:
+            keyword_norm = _normalize_search_text(keyword)
+            if keyword_norm in title_norm:
+                score -= 12
+            if keyword_norm in channel_norm:
+                score -= 4
+
+    return score
+
+
+def is_likely_karaoke_result(title: str, channel: str = "") -> bool:
+    """Heuristic to decide whether a result looks like a karaoke/playback track."""
+    title_norm = _normalize_search_text(title)
+    channel_norm = _normalize_search_text(channel)
+    positive = any(_normalize_search_text(keyword) in title_norm for keyword in _SEARCH_KARAOKE_KEYWORDS)
+    positive = positive or any(
+        _normalize_search_text(keyword) in channel_norm for keyword in _SEARCH_KARAOKE_KEYWORDS
+    )
+    negative_hits = sum(
+        1 for keyword in _SEARCH_NEGATIVE_KEYWORDS if _normalize_search_text(keyword) in title_norm
+    )
+    return positive and negative_hits == 0
 
 
 def _js_runtime_args() -> list[str]:
@@ -155,25 +246,27 @@ def build_ytdl_download_command(
     return cmd
 
 
-def get_search_results(query: str) -> list[list[str]]:
+def get_search_results(query: str, karaoke_only: bool = False) -> list[list[str]]:
     """Search YouTube for videos matching the query.
 
     Args:
         query: Search query string.
+        karaoke_only: When True, prefer karaoke/playback-style results.
 
     Returns:
         List of [title, url, video_id, channel, duration] for each result.
         Duration is formatted as M:SS; channel and duration may be empty strings.
     """
     logging.info(f"Searching YouTube for: {query}")
-    num_results = 10
-    yt_search = f'ytsearch{num_results}:"{query}"'
+    requested_query = _build_search_query(query, karaoke_only)
+    num_results = 20 if karaoke_only else 10
+    yt_search = f'ytsearch{num_results}:"{requested_query}"'
     cmd = yt_dlp_cmd + ["-j", "--no-playlist", "--flat-playlist", yt_search]
     logging.debug(f"yt-dlp search command: {' '.join(cmd)}")
     try:
         output = subprocess.check_output(cmd).decode("utf-8", "ignore")
         logging.debug(f"Search results: {output}")
-        results = []
+        scored_results: list[tuple[int, list[str]]] = []
         for line in output.split("\n"):
             if len(line) <= 2:
                 continue
@@ -186,8 +279,17 @@ def get_search_results(query: str) -> list[list[str]]:
             if isinstance(duration_raw, (int, float)):
                 seconds = int(duration_raw)
                 duration_str = f"{seconds // 60}:{seconds % 60:02d}"
-            results.append([j["title"], j["url"], j["id"], channel, duration_str])
-        return results
+            row = [j["title"], j["url"], j["id"], channel, duration_str]
+            score = _score_search_result(j["title"], channel, query, karaoke_only)
+            scored_results.append((score, row))
+
+        if karaoke_only:
+            karaoke_matches = [row for score, row in scored_results if score > 0]
+            if karaoke_matches:
+                scored_results = [(score, row) for score, row in scored_results if score > 0]
+
+        scored_results.sort(key=lambda item: item[0], reverse=True)
+        return [row for _, row in scored_results[:10]]
     except subprocess.CalledProcessError as e:
         logging.debug(f"Error while executing search: {e}")
         raise
@@ -222,4 +324,29 @@ def get_stream_url(video_url: str) -> str | None:
         return None
     except (FileNotFoundError, PermissionError) as e:
         logging.error(f"Could not run yt-dlp: {e}")
+        return None
+
+
+def get_video_metadata(video_url: str) -> dict[str, str] | None:
+    """Fetch lightweight metadata for a direct YouTube URL."""
+    cmd = yt_dlp_cmd + ["--dump-single-json", "--no-playlist"] + _js_runtime_args() + [video_url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=20, check=False)
+        if result.returncode != 0:
+            logging.warning(
+                "yt-dlp metadata fetch failed for %s: %s",
+                video_url,
+                result.stderr.decode("utf-8", "ignore"),
+            )
+            return None
+        data = json.loads(result.stdout.decode("utf-8", "ignore"))
+        return {
+            "title": str(data.get("title") or "").strip(),
+            "channel": str(data.get("channel") or data.get("uploader") or "").strip(),
+        }
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        logging.warning("Could not fetch metadata for %s: %s", video_url, e)
+        return None
+    except (FileNotFoundError, PermissionError) as e:
+        logging.error(f"Could not run yt-dlp for metadata fetch: {e}")
         return None

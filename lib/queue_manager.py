@@ -33,6 +33,11 @@ class QueueManager:
         self._get_now_playing_user = get_now_playing_user
         self._filename_from_path = filename_from_path
         self._get_available_songs = get_available_songs
+        self._last_popped_user_key: str | None = None
+        self._round_seen_user_keys: set[str] = set()
+
+    def _user_key(self, user: str) -> str:
+        return " ".join(user.split()).casefold()
 
     def is_song_in_queue(self, song_path: str) -> bool:
         """Check if a song is already in the queue."""
@@ -45,8 +50,9 @@ class QueueManager:
             return False
 
         now_playing_user = self._get_now_playing_user() if self._get_now_playing_user else None
-        count = sum(1 for item in self.queue if item["user"] == user) + (
-            1 if now_playing_user == user else 0
+        user_key = self._user_key(user)
+        count = sum(1 for item in self.queue if self._user_key(item["user"]) == user_key) + (
+            1 if now_playing_user and self._user_key(now_playing_user) == user_key else 0
         )
         return count >= int(limit)
 
@@ -69,8 +75,8 @@ class QueueManager:
         Users take turns in rounds: a user's Nth song is placed after all
         other users' Nth songs (or at queue end).
         """
-        # Count how many songs this user already has in queue
-        user_song_count = sum(1 for item in self.queue if item["user"] == user)
+        user_key = self._user_key(user)
+        user_song_count = sum(1 for item in self.queue if self._user_key(item["user"]) == user_key)
 
         # Find position after the last song in "round N" where N = user_song_count
         # Round 0 = first song from each user, Round 1 = second song, etc.
@@ -78,7 +84,7 @@ class QueueManager:
         songs_seen_per_user: dict[str, int] = {}
 
         for idx, item in enumerate(self.queue):
-            queue_user = item["user"]
+            queue_user = self._user_key(item["user"])
             songs_seen_per_user[queue_user] = songs_seen_per_user.get(queue_user, 0) + 1
             # This song is in round (count - 1) for its user
             song_round = songs_seen_per_user[queue_user] - 1
@@ -248,7 +254,45 @@ class QueueManager:
         if not self.queue:
             return None
 
-        song = self.queue.pop(0)
+        if not self._preferences.get_or_default("enable_fair_queue"):
+            song = self.queue.pop(0)
+            self._last_popped_user_key = self._user_key(song["user"])
+            self._round_seen_user_keys = {self._last_popped_user_key}
+            logging.info(f"Popped song from queue: {song['title']}")
+            return song
+
+        user_keys_in_queue = {self._user_key(item["user"]) for item in self.queue}
+        if self._round_seen_user_keys.issuperset(user_keys_in_queue):
+            self._round_seen_user_keys = set()
+
+        last_key = self._last_popped_user_key
+        has_other_user = (
+            last_key is not None and any(self._user_key(item["user"]) != last_key for item in self.queue)
+        )
+        has_unseen_user = any(
+            self._user_key(item["user"]) not in self._round_seen_user_keys for item in self.queue
+        )
+
+        def is_candidate(item: dict[str, Any]) -> bool:
+            k = self._user_key(item["user"])
+            if has_other_user and last_key is not None and k == last_key:
+                return False
+            if has_unseen_user and k in self._round_seen_user_keys:
+                return False
+            return True
+
+        candidate_index = next((i for i, it in enumerate(self.queue) if is_candidate(it)), None)
+        if candidate_index is None and has_other_user:
+            candidate_index = next(
+                (i for i, it in enumerate(self.queue) if self._user_key(it["user"]) != last_key),
+                None,
+            )
+        if candidate_index is None:
+            candidate_index = 0
+
+        song = self.queue.pop(candidate_index)
+        self._last_popped_user_key = self._user_key(song["user"])
+        self._round_seen_user_keys.add(self._last_popped_user_key)
         logging.info(f"Popped song from queue: {song['title']}")
         return song
 

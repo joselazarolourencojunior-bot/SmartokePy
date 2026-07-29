@@ -31,6 +31,45 @@ def get_media_duration(file_path: str) -> int | None:
         return None
 
 
+def validate_media_file(file_path: str) -> tuple[bool, str | None]:
+    """Perform a lightweight integrity check on a media file.
+
+    Returns:
+        (True, None) when the file looks usable, otherwise (False, reason).
+    """
+    try:
+        probe = ffmpeg.probe(file_path)
+    except Exception as e:
+        return False, f"ffprobe failed: {e}"
+
+    format_info = probe.get("format", {})
+    streams = probe.get("streams", [])
+
+    if not streams:
+        return False, "file has no media streams"
+
+    size = format_info.get("size")
+    try:
+        if size is not None and int(size) <= 0:
+            return False, "file size is zero"
+    except (TypeError, ValueError):
+        pass
+
+    duration = format_info.get("duration")
+    try:
+        if duration is not None and float(duration) <= 0:
+            return False, "media duration is zero"
+    except (TypeError, ValueError):
+        pass
+
+    has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
+    has_video = any(stream.get("codec_type") == "video" for stream in streams)
+    if not has_audio and not has_video:
+        return False, "file has neither audio nor video stream"
+
+    return True, None
+
+
 def build_ffmpeg_cmd(
     fr: FileResolver,
     semitones: int = 0,

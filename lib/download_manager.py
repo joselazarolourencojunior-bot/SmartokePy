@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
 import subprocess
+import time
 import uuid
-from queue import Queue
+from queue import Empty, Queue
 from threading import Thread
 
 from pikaraoke.lib.events import EventSystem
 from pikaraoke.lib.preference_manager import PreferenceManager
 from pikaraoke.lib.queue_manager import QueueManager
 from pikaraoke.lib.song_manager import SongManager
+from pikaraoke.lib.ffmpeg import validate_media_file
+from pikaraoke.lib.metadata_parser import normalize_for_comparison, regex_tidy
 from pikaraoke.lib.youtube_dl import (
     build_ytdl_download_command,
+    get_video_metadata,
     get_youtube_id_from_url,
+    is_likely_karaoke_result,
 )
 
 
@@ -63,6 +70,7 @@ class DownloadManager:
         self.active_download: dict | None = None
         self._worker_thread: Thread | None = None
         self._is_downloading: bool = False  # Track if a download is currently in progress
+        self._download_stall_timeout: int = 180  # Abort downloads that stop producing output
 
     def start(self) -> None:
         """Start the download worker thread."""
@@ -95,6 +103,59 @@ class DownloadManager:
         self.download_errors = [e for e in self.download_errors if e["id"] != error_id]
         return len(self.download_errors) < initial_len
 
+    def _normalized_song_key(self, name: str) -> str:
+        tidied = regex_tidy(name) or name
+        return normalize_for_comparison(tidied)
+
+    def _find_existing_library_match(self, video_url: str, title: str | None) -> str | None:
+        video_id = get_youtube_id_from_url(video_url)
+        if video_id:
+            existing_by_id = self._song_manager.songs.find_by_id(self._download_path, video_id)
+            if existing_by_id:
+                return existing_by_id
+
+        if not title:
+            return None
+
+        wanted_key = self._normalized_song_key(title)
+        if not wanted_key:
+            return None
+
+        for song_path in self._song_manager.songs:
+            existing_name = self._song_manager.display_name_from_path(song_path)
+            if self._normalized_song_key(existing_name) == wanted_key:
+                return song_path
+
+        return None
+
+    def _classify_download_failure(self, raw_error: str, stalled: bool) -> str:
+        error_text = (raw_error or "").casefold()
+        if stalled:
+            return "Download timed out and was cancelled"
+        if any(
+            token in error_text
+            for token in (
+                "video unavailable",
+                "private video",
+                "this video is private",
+                "sign in to confirm your age",
+                "not available in your country",
+                "members-only",
+                "copyright",
+                "unavailable",
+            )
+        ):
+            return "Video unavailable, private, blocked, or restricted"
+        if any(token in error_text for token in ("http error 403", "http error 429", "too many requests")):
+            return "Video source denied access or rate-limited the download"
+        if any(token in error_text for token in ("timed out", "timeout", "network is unreachable", "temporary failure in name resolution")):
+            return "Network error while downloading"
+        if any(token in error_text for token in ("permission denied", "read-only file system", "no space left on device")):
+            return "Storage error while saving the file"
+        if any(token in error_text for token in ("unsupported url", "unsupported url scheme")):
+            return "Unsupported or invalid video link"
+        return "Download failed"
+
     def queue_download(
         self,
         video_url: str,
@@ -118,7 +179,51 @@ class DownloadManager:
         if "&list=" in video_url:
             video_url = video_url.split("&list=")[0]
 
+        fetched_metadata = None
+        if not title:
+            fetched_metadata = get_video_metadata(video_url)
+            title = fetched_metadata.get("title") if fetched_metadata else title
+
         displayed_title = title if title else video_url
+
+        existing_match = self._find_existing_library_match(video_url, title)
+        if existing_match:
+            existing_name = self._song_manager.display_name_from_path(existing_match)
+            logging.info("Rejected duplicate download already in library: %s", displayed_title)
+            self.download_errors.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "title": displayed_title,
+                    "url": video_url,
+                    "user": user,
+                    "error": f"Already exists in library: {existing_name}",
+                }
+            )
+            self._events.emit(
+                "notification",
+                _("Song already exists in library: %s") % existing_name,
+                "warning",
+            )
+            return
+
+        karaoke_channel = fetched_metadata.get("channel", "") if fetched_metadata else ""
+        if title and not is_likely_karaoke_result(title, karaoke_channel):
+            logging.warning("Rejected non-karaoke candidate before download: %s", displayed_title)
+            self.download_errors.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "title": displayed_title,
+                    "url": video_url,
+                    "user": user,
+                    "error": "Rejected because title does not look like karaoke/playback",
+                }
+            )
+            self._events.emit(
+                "notification",
+                _("Rejected non-karaoke result: %s") % displayed_title,
+                "warning",
+            )
+            return
 
         # Check how many items are ahead (in queue + currently downloading)
         pending_count = self.download_queue.qsize() + (1 if self._is_downloading else 0)
@@ -241,6 +346,7 @@ class DownloadManager:
         )
 
         output_buffer = []
+        output_queue: Queue[str | None] = Queue()
 
         # Regex to parse progress from yt-dlp stdout
         # Example: [download]   0.0% of    4.62MiB at  396.66KiB/s ETA 00:12
@@ -248,36 +354,85 @@ class DownloadManager:
             r"\[download\]\s+(\d+\.?\d*)%\s+of\s+.*?\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)"
         )
         video_id = get_youtube_id_from_url(video_url)
+        last_output_at = time.monotonic()
+        terminated_for_stall = False
+
+        def _read_stdout() -> None:
+            if process.stdout is None:
+                output_queue.put(None)
+                return
+            try:
+                for line in iter(process.stdout.readline, ""):
+                    if not line:
+                        break
+                    output_queue.put(line)
+            finally:
+                output_queue.put(None)
+
+        Thread(target=_read_stdout, daemon=True).start()
 
         while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                output_buffer.append(line)
-                match = progress_regex.search(line)
-                if match and self.active_download:
-                    percent = float(match.group(1))
-                    speed = match.group(2)
-                    eta = match.group(3)
+            try:
+                line = output_queue.get(timeout=1)
+            except Empty:
+                if process.poll() is not None:
+                    break
+                if time.monotonic() - last_output_at > self._download_stall_timeout:
+                    terminated_for_stall = True
+                    logging.error(
+                        "yt-dlp stalled for over %ss while downloading %s; terminating process",
+                        self._download_stall_timeout,
+                        displayed_title,
+                    )
+                    process.kill()
+                    break
+                continue
 
-                    self.active_download["progress"] = percent
-                    self.active_download["status"] = "downloading"
-                    self.active_download["speed"] = speed
-                    self.active_download["eta"] = eta
-                # Log only non-progress lines to avoid spamming logs, or log everything at debug
-                # logging.debug(line.strip())
+            if line is None:
+                if process.poll() is not None:
+                    break
+                continue
 
-        rc = process.poll()
+            last_output_at = time.monotonic()
+            output_buffer.append(line)
+            match = progress_regex.search(line)
+            if match and self.active_download:
+                percent = float(match.group(1))
+                speed = match.group(2)
+                eta = match.group(3)
+
+                self.active_download["progress"] = percent
+                self.active_download["status"] = "downloading"
+                self.active_download["speed"] = speed
+                self.active_download["eta"] = eta
+            elif self.active_download and (
+                "[Merger]" in line or "Destination:" in line or "Post-process" in line
+            ):
+                # yt-dlp sometimes pauses progress updates while finalizing the file.
+                self.active_download["status"] = "processing"
+                self.active_download["eta"] = "--:--"
+            # Log only non-progress lines to avoid spamming logs, or log everything at debug
+            # logging.debug(line.strip())
+
+        try:
+            rc = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            rc = process.wait(timeout=5)
         output = "".join(output_buffer)
+        if terminated_for_stall:
+            output += (
+                f"\nyt-dlp stalled for more than {self._download_stall_timeout} seconds "
+                "without producing output and was terminated.\n"
+            )
 
         if rc != 0:
+            user_message = self._classify_download_failure(output, terminated_for_stall)
             # Logic removed: We no longer retry synchronously as it blocks the queue.
             # Failed downloads are now failed fast and logged.
 
-            # MSG: Message shown after the download process is completed but the song is not found
             self._events.emit(
-                "notification", _("Error downloading song: ") + displayed_title, "danger"
+                "notification", f"{user_message}: {displayed_title}", "danger"
             )
             logging.error(f"yt-dlp stderr: {output}")
             self.download_errors.append(
@@ -286,7 +441,7 @@ class DownloadManager:
                     "title": displayed_title,
                     "url": video_url,
                     "user": user,
-                    "error": output or "Unknown error",
+                    "error": f"{user_message}: {output or 'Unknown error'}",
                 }
             )
         else:
@@ -312,10 +467,49 @@ class DownloadManager:
                 logging.warning("No video ID available to find downloaded song")
 
             if song_path:
-                self._events.emit("song_downloaded", song_path)
+                is_valid, validation_error = validate_media_file(song_path)
+                if not is_valid:
+                    logging.error(
+                        "Downloaded file failed integrity check and will be removed: %s (%s)",
+                        song_path,
+                        validation_error,
+                    )
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(song_path)
+                    self.download_errors.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "title": displayed_title,
+                            "url": video_url,
+                            "user": user,
+                            "error": f"Corrupted or invalid file removed: {validation_error}",
+                        }
+                    )
+                    self._events.emit(
+                        "notification",
+                        _("Corrupted download removed: %s") % displayed_title,
+                        "danger",
+                    )
+                    song_path = None
+                else:
+                    self._events.emit("song_downloaded", song_path)
             else:
                 logging.warning(
                     f"Could not find downloaded song in {self._download_path} matching ID: {video_id}"
+                )
+                self.download_errors.append(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "title": displayed_title,
+                        "url": video_url,
+                        "user": user,
+                        "error": "Download finished but the saved file could not be found",
+                    }
+                )
+                self._events.emit(
+                    "notification",
+                    _("Downloaded file could not be located: %s") % displayed_title,
+                    "danger",
                 )
 
             if enqueue:

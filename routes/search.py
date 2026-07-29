@@ -46,10 +46,7 @@ def search():
     search_string = request.args.get("search_string")
     if search_string:
         non_karaoke = request.args.get("non_karaoke") == "true"
-        if non_karaoke:
-            search_results = get_search_results(search_string)
-        else:
-            search_results = get_search_results(search_string + " karaoke")
+        search_results = get_search_results(search_string, karaoke_only=not non_karaoke)
     else:
         search_string = None
         search_results = None
