@@ -1,6 +1,8 @@
 """Socket.IO event handlers for PiKaraoke."""
 
 import logging
+from collections.abc import Mapping
+from typing import Any
 
 from flask import request
 
@@ -18,14 +20,56 @@ def setup_socket_events(socketio):
         socketio: The SocketIO instance.
     """
 
+    def _parse_float(value: Any) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     @socketio.on("end_song")
-    def end_song(reason: str) -> None:
+    def end_song(payload: str | Mapping | None) -> None:
         """Handle end_song WebSocket event from client.
 
-        Args:
-            reason: Reason for ending the song (e.g., 'complete', 'error').
+        Accepts either a legacy string reason or a telemetry payload from
+        the splash screen so premature endings can be distinguished from a
+        genuine end-of-song event.
         """
         k = get_karaoke_instance()
+
+        reason = None
+        if isinstance(payload, Mapping):
+            reason = payload.get("reason")
+            position = _parse_float(payload.get("position"))
+            duration = _parse_float(payload.get("duration"))
+            ended_early = bool(duration and position is not None and position < (duration - 3))
+            ffmpeg_running = (
+                k.playback_controller.ffmpeg_process is not None
+                and k.playback_controller.ffmpeg_process.poll() is None
+            )
+
+            if ended_early:
+                if ffmpeg_running:
+                    logging.warning(
+                        "Splash client ended early but FFmpeg is still running. "
+                        f"Requesting client reload: position={position:.2f}s "
+                        f"duration={duration:.2f}s payload={dict(payload)}"
+                    )
+                    socketio.emit(
+                        "retry_current_song",
+                        {"position": max(position - 1, 0), "reason": reason},
+                    )
+                    return
+
+                reason = f"client-ended-early ({position:.1f}/{duration:.1f}s)"
+                logging.warning(
+                    "Splash client reported completion before track duration and FFmpeg "
+                    f"was no longer running: payload={dict(payload)}"
+                )
+            elif reason:
+                logging.info(f"Splash client requested end_song: {dict(payload)}")
+        else:
+            reason = payload
+
         k.playback_controller.end_song(reason)
 
     @socketio.on("start_song")

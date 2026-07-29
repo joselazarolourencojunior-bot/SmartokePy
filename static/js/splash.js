@@ -7,8 +7,10 @@ let showMenu = false;
 let menuButtonVisible = false;
 let autoplayConfirmed = false;
 let volume = 0.85;
-const playbackStartTimeout = 10000;
+const playbackStartTimeout = 20000;
 const bgMediaResumeDelay = 2000;
+const prematureEndThresholdSeconds = 3;
+const maxPlaybackRecoveryAttempts = 2;
 let isScoreShown = false;
 const hasBgVideo = PikaraokeConfig.hasBgVideo;
 let currentVideoUrl = null;
@@ -25,6 +27,8 @@ let scoreReviews = {
 let isMaster = false;
 let uiScale = null;
 let clockIntervalId = null;
+let playbackRecoveryAttempts = 0;
+let playbackResumeHint = null;
 
 // Browser detection
 const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
@@ -102,7 +106,63 @@ const hideVideo = () => {
   $("#video-container").hide();
 }
 
+const getPlaybackTelemetry = (video) => ({
+  reason: null,
+  position: Number.isFinite(video.currentTime) ? video.currentTime : null,
+  duration: Number.isFinite(video.duration)
+    ? video.duration
+    : (Number.isFinite(nowPlaying.now_playing_duration) ? nowPlaying.now_playing_duration : null),
+  readyState: video.readyState,
+  networkState: video.networkState,
+  error: video.error ? (video.error.message || `media-error-${video.error.code}`) : null,
+  url: currentVideoUrl,
+});
+
+const isPrematureEnd = (video) => {
+  const duration = Number.isFinite(video.duration)
+    ? video.duration
+    : (Number.isFinite(nowPlaying.now_playing_duration) ? nowPlaying.now_playing_duration : null);
+  const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  return duration !== null && position < (duration - prematureEndThresholdSeconds);
+};
+
+const tryPlaybackRecovery = (reason, mode = "combined") => {
+  const video = getVideoPlayer();
+  if (!hlsInstance || playbackRecoveryAttempts >= maxPlaybackRecoveryAttempts) {
+    return false;
+  }
+
+  playbackRecoveryAttempts += 1;
+  console.warn(`Attempting HLS playback recovery (${playbackRecoveryAttempts}/${maxPlaybackRecoveryAttempts}):`, reason);
+
+  try {
+    const restartAt = Math.max((video.currentTime || 0) - 1, 0);
+    if (mode === "network" || mode === "combined") {
+      hlsInstance.startLoad(restartAt);
+    }
+    if (mode === "media" || mode === "combined") {
+      hlsInstance.recoverMediaError();
+    }
+  } catch (e) {
+    console.error("HLS recovery failed to initialize", e);
+    return false;
+  }
+
+  setTimeout(() => {
+    if (!isMediaPlaying(video) && currentVideoUrl) {
+      video.play().catch(err => console.error("Recovery play failed:", err));
+    }
+  }, 250);
+
+  return true;
+};
+
 const endSong = async (reason = null, showScore = false) => {
+  const video = getVideoPlayer();
+  const payload = {
+    ...getPlaybackTelemetry(video),
+    reason,
+  };
   if (showScore && !PikaraokeConfig.disableScore) {
     isScoreShown = true;
     await startScore("/static/");
@@ -113,13 +173,12 @@ const endSong = async (reason = null, showScore = false) => {
     hlsInstance.destroy();
     hlsInstance = null;
   }
-  const video = getVideoPlayer();
   video.pause();
   $("#video-source").attr("src", "");
   video.load();
   hideVideo();
   if (isMaster) {
-    socket.emit("end_song", reason);
+    socket.emit("end_song", payload);
   } else {
     console.log("Slave active (read-only): skipping end_song emission");
   }
@@ -317,6 +376,7 @@ const handleNowPlayingUpdate = (np) => {
 
   if (np.now_playing_url && np.now_playing_url !== currentVideoUrl) {
     currentVideoUrl = np.now_playing_url;
+    playbackRecoveryAttempts = 0;
     const streamUrl = np.now_playing_url;
     $("#video-source").attr("src", "");
     video.load();
@@ -329,6 +389,19 @@ const handleNowPlayingUpdate = (np) => {
       } else {
         if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
         hlsInstance = new Hls({ startPosition: 0 });
+        hlsInstance.on(Hls.Events.ERROR, (_event, data) => {
+          console.error("HLS error:", data);
+          if (!data?.fatal) return;
+
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && tryPlaybackRecovery(`hls-network-${data.details}`, "network")) {
+            return;
+          }
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && tryPlaybackRecovery(`hls-media-${data.details}`, "media")) {
+            return;
+          }
+
+          endSong(`hls-fatal-${data.type || "unknown"}-${data.details || "unknown"}`);
+        });
         hlsInstance.loadSource(streamUrl);
         hlsInstance.attachMedia(video);
       }
@@ -373,7 +446,12 @@ const handleNowPlayingUpdate = (np) => {
 
 async function loadNowPlaying() {
   const data = await $.get("/now_playing");
-  handleNowPlayingUpdate(JSON.parse(data));
+  const parsed = JSON.parse(data);
+  if (playbackResumeHint !== null && parsed.now_playing) {
+    parsed.now_playing_position = playbackResumeHint;
+  }
+  playbackResumeHint = null;
+  handleNowPlayingUpdate(parsed);
 }
 
 const setupOverlayMenus = () => {
@@ -447,11 +525,27 @@ const setupVideoPlayer = () => {
     }
   }, 1000);
 
-  video.addEventListener("ended", () => { endSong("complete", true); });
+  video.addEventListener("ended", () => {
+    if (isPrematureEnd(video) && tryPlaybackRecovery("video-ended-early")) {
+      return;
+    }
+    endSong(isPrematureEnd(video) ? "video-ended-early" : "complete", !isPrematureEnd(video));
+  });
   video.addEventListener("timeupdate", (e) => { $("#current").text(formatTime(video.currentTime)); });
   $("#video source")[0].addEventListener("error", (e) => {
-    if (isMediaPlaying(video)) {
+    if (tryPlaybackRecovery("source-error")) {
+      return;
+    }
+    if (isMediaPlaying(video) || currentVideoUrl) {
       endSong("error while playing");
+    }
+  });
+  video.addEventListener("error", () => {
+    if (tryPlaybackRecovery("video-error")) {
+      return;
+    }
+    if (isMediaPlaying(video) || currentVideoUrl) {
+      endSong("video-error");
     }
   });
   window.addEventListener(
@@ -628,6 +722,17 @@ const setupSocketEvents = () => {
   socket.on("preferences_update", applyPreferenceUpdate);
   socket.on("preferences_reset", applyPreferencesReset);
   socket.on("score_phrases_update", (phrases) => { scoreReviews = phrases; });
+  socket.on("retry_current_song", async (payload = {}) => {
+    console.warn("Server requested current song retry:", payload);
+    const resumePosition = Number(payload.position);
+    playbackResumeHint = Number.isFinite(resumePosition) ? resumePosition : null;
+    currentVideoUrl = null;
+    if (hlsInstance) {
+      hlsInstance.destroy();
+      hlsInstance = null;
+    }
+    await loadNowPlaying();
+  });
 
   socket.on("playback_position", (position) => {
     if (!isMaster) {
