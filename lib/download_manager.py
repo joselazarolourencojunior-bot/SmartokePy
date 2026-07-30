@@ -492,6 +492,29 @@ class DownloadManager:
                     )
                     song_path = None
                 else:
+                    suggested_name = self._song_manager.suggest_download_filename(song_path)
+                    if suggested_name:
+                        current_name = os.path.splitext(os.path.basename(song_path))[0]
+                        if suggested_name != current_name:
+                            candidate_path = os.path.join(
+                                self._download_path,
+                                suggested_name + os.path.splitext(song_path)[1],
+                            )
+                            if not os.path.exists(candidate_path):
+                                try:
+                                    os.rename(song_path, candidate_path)
+                                    song_path = candidate_path
+                                    logging.info(
+                                        "Renamed downloaded file to normalized title: %s",
+                                        os.path.basename(song_path),
+                                    )
+                                except OSError as e:
+                                    logging.warning(
+                                        "Could not rename downloaded file %s to %s: %s",
+                                        song_path,
+                                        candidate_path,
+                                        e,
+                                    )
                     self._events.emit("song_downloaded", song_path)
             else:
                 logging.warning(

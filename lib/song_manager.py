@@ -9,15 +9,18 @@ from collections.abc import Callable
 from pikaraoke.lib.get_platform import is_windows
 from pikaraoke.lib.karaoke_database import KaraokeDatabase
 from pikaraoke.lib.library_scanner import build_song_record
-from pikaraoke.lib.metadata_parser import regex_tidy, youtube_id_suffix
+from pikaraoke.lib.metadata_parser import get_song_correct_name, regex_tidy, youtube_id_suffix
 from pikaraoke.lib.song_list import SongList
 
-# Characters illegal in Windows filenames
-_WINDOWS_ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*]')
+# Characters that should never appear in generated filenames.
+_COMMON_ILLEGAL_CHARS = re.compile(r'[/\\\x00]')
+# Additional characters illegal in Windows filenames.
+_WINDOWS_ILLEGAL_CHARS = re.compile(r'[<>:"|?*]')
 
 
 def sanitize_filename(name: str) -> str:
     """Remove characters that are illegal in filenames on the current platform."""
+    name = _COMMON_ILLEGAL_CHARS.sub("-", name)
     if is_windows():
         name = _WINDOWS_ILLEGAL_CHARS.sub("-", name)
     return name.strip()
@@ -117,6 +120,25 @@ class SongManager:
         self.songs.rename(song_path, new_path)
         self._db.update_path(song_path, new_path)
         return new_path
+
+    def suggest_download_filename(self, song_path: str) -> str | None:
+        """Return a normalized download filename in 'Title - Artist' format.
+
+        The returned value omits the extension but preserves the YouTube ID suffix
+        so duplicates and later lookups still work as before.
+        """
+        base_name = self.filename_from_path(song_path, remove_youtube_id=True, tidy=False)
+        corrected = get_song_correct_name(
+            base_name,
+            raw_filename=song_path,
+            force_title_first=True,
+        )
+        if not corrected:
+            return None
+
+        suffix = youtube_id_suffix(song_path)
+        suggested = sanitize_filename(corrected)
+        return f"{suggested}{suffix}" if suffix else suggested
 
     def register_download(self, song_path: str) -> None:
         """Register a newly downloaded song in SongList and DB."""

@@ -489,7 +489,10 @@ def _preserve_original_artist(original_name: str, lastfm_artist: str) -> str | N
 
 
 def get_best_result(
-    results: list[dict] | None, original_query: str, original_name: str | None = None
+    results: list[dict] | None,
+    original_query: str,
+    original_name: str | None = None,
+    force_title_first: bool = False,
 ) -> str | None:
     """Select the highest-scoring result and format to match the input convention."""
     if not results:
@@ -509,6 +512,9 @@ def get_best_result(
         preserved = _preserve_original_artist(original_name, artist)
         if preserved:
             artist = preserved
+
+    if force_title_first:
+        return f"{clean_track_name} - {artist}"
 
     format_query = original_name or original_query
     if _detect_artist_first(format_query, best["artist"], clean_track_name):
@@ -760,7 +766,11 @@ def search_lastfm_tracks(query: str, limit: int | None = None) -> list[dict]:
     return [{"name": r.get("name", ""), "artist": r.get("artist", "")} for r in results]
 
 
-def get_song_correct_name(song: str, raw_filename: str | None = None) -> str | None:
+def get_song_correct_name(
+    song: str,
+    raw_filename: str | None = None,
+    force_title_first: bool = False,
+) -> str | None:
     """Get the best corrected name for a song, using provenance-based routing.
 
     For YouTube-sourced files (detected via raw_filename):
@@ -772,8 +782,21 @@ def get_song_correct_name(song: str, raw_filename: str | None = None) -> str | N
     if raw_filename and has_youtube_id(raw_filename):
         tidied = regex_tidy(song)
         if has_artist_title_separator(tidied):
+            if force_title_first and " - " in tidied:
+                left, right = tidied.split(" - ", 1)
+                return f"{right.strip()} - {left.strip()}"
             return tidied
         # No separator — need Last.fm to find the artist
-        return lookup_lastfm(song)
+        if not force_title_first:
+            return lookup_lastfm(song)
 
-    return lookup_lastfm(song)
+    cleaned_query = clean_search_query(song)
+    results = _lastfm_track_search(cleaned_query)
+    if not isinstance(results, list):
+        return None
+    return get_best_result(
+        results,
+        cleaned_query,
+        original_name=song,
+        force_title_first=force_title_first,
+    )
