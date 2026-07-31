@@ -1,12 +1,5 @@
 <script>
-    // 1. Redirecionamento Híbrido
-    if (window.location.hostname.includes("ngrok-free")) {
-        const img = new Image();
-        img.onload = function() { window.location.href = "http://karaoke.local:5555"; };
-        img.src = "http://192.168.15" + new Date().getTime();
-    }
-
-    // 2. Trava de Nome Obrigatório
+    // 1. Trava de Nome Obrigatório
     document.addEventListener("DOMContentLoaded", function() {
         const singerInput = document.getElementById("singer") || document.querySelector("input[name='singer']");
         if (singerInput) {
@@ -15,7 +8,7 @@
             singerInput.style.border = "2px solid #ff4444";
         }
 
-        // 3. NOVA PERSONALIZAÇÃO: Nome do Sistema e Cores do Logotipo
+        // 2. NOVA PERSONALIZAÇÃO: Nome do Sistema e Cores do Logotipo
         // Altera o título textual do menu superior para SmartokePy
         const brand = document.querySelector(".navbar-brand") || document.querySelector(".brand");
         if (brand) {
