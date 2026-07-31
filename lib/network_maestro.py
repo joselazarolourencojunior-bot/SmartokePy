@@ -11,6 +11,7 @@ from urllib.request import urlopen
 
 import psutil
 
+from pikaraoke.lib.dell_wifi_sync import get_dell_wifi_status
 from pikaraoke.lib.wifi_setup import WifiSetupError, get_wifi_status
 
 _ETHERNET_PREFIXES = ("eth", "en", "eno", "enp", "enx")
@@ -287,14 +288,9 @@ def _build_operational_links(ngrok_status: dict[str, object]) -> dict[str, objec
                 "description": "Painel do operador/admin via internet.",
             },
             {
-                "label": "Mesa publica",
-                "url": _join_url(public_base, "/mesa/{codigo}"),
-                "description": "Modelo de link para cada mesa.",
-            },
-            {
-                "label": "Karaoke protegido",
-                "url": _join_url(public_base, "/karaoke"),
-                "description": "Acesso protegido ao SmartokePy pelo portal.",
+                "label": "Mesa",
+                "url": _join_url(public_base, "/mesa"),
+                "description": "Entrada para informar o numero/codigo da mesa.",
             },
         ]
 
@@ -345,6 +341,14 @@ def get_network_maestro_status() -> dict[str, object]:
             "message": str(exc),
         }
 
+    dell_wifi_status = get_dell_wifi_status()
+    same_wifi_network = bool(
+        wifi_status.get("connected")
+        and dell_wifi_status.get("wifi_connected")
+        and _clean_text(wifi_status.get("ssid", ""))
+        and _clean_text(wifi_status.get("ssid", "")) == _clean_text(dell_wifi_status.get("wifi_ssid", ""))
+    )
+
     internet_available = _check_internet_reachability()
     ngrok_status = _get_ngrok_status()
     public_ready = bool(internet_available and ngrok_status["online"])
@@ -370,6 +374,10 @@ def get_network_maestro_status() -> dict[str, object]:
             "interfaces": ethernet_interfaces,
         },
         "wifi": wifi_status,
+        "operator_peer": {
+            **dell_wifi_status,
+            "same_network_as_raspberry": same_wifi_network,
+        },
         "internet": {
             "online": internet_available,
             "message": (
@@ -421,6 +429,11 @@ def get_network_maestro_contract() -> dict[str, object]:
             "wifi_connected": bool(wifi.get("connected")),
             "wifi_ssid": _clean_text(wifi.get("ssid", "")),
             "wifi_ip": _clean_text(wifi.get("ip_address", "")),
+            "dell_reachable": bool((status.get("operator_peer") or {}).get("reachable")),
+            "dell_wifi_connected": bool((status.get("operator_peer") or {}).get("wifi_connected")),
+            "dell_wifi_ssid": _clean_text((status.get("operator_peer") or {}).get("wifi_ssid", "")),
+            "dell_wifi_ip": _clean_text((status.get("operator_peer") or {}).get("wifi_ip", "")),
+            "dell_same_network": bool((status.get("operator_peer") or {}).get("same_network_as_raspberry")),
             "internet_online": bool(internet.get("online")),
             "ngrok_online": bool(ngrok.get("online")),
             "ngrok_public_url": _clean_text(ngrok.get("public_url", "")),

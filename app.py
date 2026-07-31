@@ -282,7 +282,7 @@ def main() -> None:
 
     # expose shared configuration variables to the flask app
     app.config["ADMIN_PASSWORD"] = args.admin_password
-    app.config["SITE_NAME"] = "PiKaraoke"
+    app.config["SITE_NAME"] = "SmartokePy"
 
     # Expose some functions to jinja templates
     app.jinja_env.globals.update(filename_from_path=k.song_manager.display_name_from_path)

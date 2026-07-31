@@ -8,7 +8,6 @@ import time
 from typing import Any
 
 from flask import current_app, request
-from flask_socketio import emit
 
 from pikaraoke.karaoke import Karaoke
 
@@ -63,7 +62,11 @@ def broadcast_event(event: str, data: Any = None) -> None:
         data: Optional data payload to send with the event.
     """
     logging.debug("Broadcasting event: " + event)
-    emit(event, data, namespace="/", broadcast=True)
+    k = get_karaoke_instance()
+    if k.socketio:
+        k.socketio.emit(event, data, namespace="/")
+    else:
+        logging.warning("Cannot broadcast event %s because socketio is not configured", event)
 
 
 def delayed_halt(cmd: int) -> None:

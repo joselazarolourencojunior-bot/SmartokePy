@@ -471,8 +471,8 @@ class Karaoke:
             return
         # MSG: Message shown after the song is transposed, first is the semitones and then the song name
         self.log_and_send(_("Transposing by %s semitones: %s") % (semitones, now_playing))
-        # Insert the same song at the top of the queue with transposition
-        self.queue_manager.enqueue(filename, user, semitones, True)
+        # Requeue the current song at the front with the new transpose value so it restarts next.
+        self.queue_manager.enqueue(filename, user, semitones, True, log_action=False)
         self.playback_controller.skip(log_action=False)
 
     def volume_change(self, vol_level: float) -> bool:

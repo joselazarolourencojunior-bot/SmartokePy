@@ -46,6 +46,7 @@ echo "Projeto local: $PROJECT_DIR"
 echo "Pacote instalado: $PACKAGE_DIR"
 
 copy_file "$PROJECT_DIR/lib/network_maestro.py" "$PACKAGE_DIR/lib/network_maestro.py"
+copy_file "$PROJECT_DIR/lib/dell_wifi_sync.py" "$PACKAGE_DIR/lib/dell_wifi_sync.py"
 copy_file "$PROJECT_DIR/routes/network_maestro.py" "$PACKAGE_DIR/routes/network_maestro.py"
 copy_file "$PROJECT_DIR/routes/network_maestro_standalone.py" "$PACKAGE_DIR/routes/network_maestro_standalone.py"
 copy_file "$PROJECT_DIR/templates/network_maestro.html" "$PACKAGE_DIR/templates/network_maestro.html"
@@ -55,6 +56,7 @@ copy_file "$PROJECT_DIR/network_maestro_app.py" "$PACKAGE_DIR/network_maestro_ap
 echo "Compilando modulos novos..."
 "$PYTHON_BIN" -m py_compile \
   "$PACKAGE_DIR/lib/network_maestro.py" \
+  "$PACKAGE_DIR/lib/dell_wifi_sync.py" \
   "$PACKAGE_DIR/routes/network_maestro.py" \
   "$PACKAGE_DIR/routes/network_maestro_standalone.py" \
   "$PACKAGE_DIR/network_maestro_app.py"
@@ -91,3 +93,7 @@ curl -fsS "http://127.0.0.1:$MAESTRO_PORT/health" || true
 echo
 echo "Acesso pelo cabo:"
 echo "http://10.10.10.2:$MAESTRO_PORT"
+echo
+echo "Se quiser sincronizar tambem o Wi-Fi do Dell pelo Maestro:"
+echo "1) No Dell, rode: sudo ./scripts/install_dell_wifi_sync_sudoers.sh"
+echo "2) No Raspberry, rode: ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@10.10.10.1"

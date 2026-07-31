@@ -195,7 +195,7 @@ chmod +x /home/pi/SmartokePy/scripts/install_network_maestro_rpi.sh
 Atalho do Dell:
 
 ```ini
-Exec=sh -c 'xdg-open "$0://$1:5560"' http 10.10.10.2
+Exec=xdg-open http://10.10.10.2:5560/
 ```
 
 ## 4. Dell - Configuracao de Sistema
@@ -261,6 +261,33 @@ Aplicar:
 sudo exportfs -ra
 sudo systemctl restart nfs-kernel-server
 sudo exportfs -v
+```
+
+### 4.5 Sincronismo Wi-Fi Dell <- Raspberry
+
+Esse passo deixa o Maestro de Rede no Raspberry capaz de mandar o Dell entrar e sair do mesmo Wi-Fi pelo cabo `10.10.10.0/24`.
+
+No Raspberry:
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@10.10.10.1
+ssh -o BatchMode=yes -o ConnectTimeout=5 pi@10.10.10.1 'echo SSH_OK'
+```
+
+No Dell:
+
+```bash
+chmod +x scripts/install_dell_wifi_sync_sudoers.sh
+sudo ./scripts/install_dell_wifi_sync_sudoers.sh
+```
+
+Validacao rapida a partir do Raspberry:
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=5 pi@10.10.10.1 'sudo -n nmcli radio wifi'
 ```
 
 ## 5. Desligamento Automatico Dell -> Raspberry

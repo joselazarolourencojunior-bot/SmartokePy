@@ -2,7 +2,7 @@
 Type=Application
 Name=5-maestro-rede
 Comment=Abre o Maestro de Rede do Raspberry pelo cabo
-Exec=sh -c 'xdg-open "$0://$1:5560"' http 10.10.10.2
+Exec=xdg-open http://10.10.10.2:5560/
 Icon=network-workgroup
 Terminal=false
 Categories=Network;

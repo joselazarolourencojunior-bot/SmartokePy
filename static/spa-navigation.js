@@ -92,8 +92,11 @@
             // null = Cancel clicked, "" = OK with empty input
             if (name !== null && name.trim() !== "") {
                 Cookies.set("user", name, { expires: 3650, path: '/' });
-                // Update the displayed name without reloading
-                $("#current-user span").text(name);
+                if (typeof window.updateCurrentUserDisplay === "function") {
+                    window.updateCurrentUserDisplay(name);
+                } else {
+                    $("#current-user span").text(name);
+                }
             }
             // Remove focus from the link to prevent CSS focus styling (black background)
             $(this).blur();

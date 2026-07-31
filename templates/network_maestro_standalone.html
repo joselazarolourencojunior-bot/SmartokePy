@@ -416,6 +416,11 @@
           <strong class="card-value">Carregando...</strong>
           <p class="card-helper">Aguardando diagnostico.</p>
         </div>
+        <div id="partnerCard" class="status-card warning">
+          <span class="card-label">Wi-Fi do Dell</span>
+          <strong class="card-value">Carregando...</strong>
+          <p class="card-helper">Aguardando diagnostico.</p>
+        </div>
         <div id="internetCard" class="status-card warning">
           <span class="card-label">Internet</span>
           <strong class="card-value">Carregando...</strong>
@@ -506,6 +511,7 @@
 
   <script>
     let currentWifiStatus = null;
+    let currentPartnerStatus = null;
     let statusTimer = null;
 
     function signalLabel(signal) {
@@ -573,12 +579,35 @@
       currentWifiStatus = status;
       const value = status.connected ? (status.ssid || "Conectado") : "Sem rede";
       const helper = [
+        status.connected ? "Raspberry conectado" : "Raspberry sem Wi-Fi",
         status.device ? `Interface ${status.device}` : "",
         status.ip_address ? `IP ${status.ip_address}` : "",
         status.signal == null ? "" : `Sinal ${status.signal}% (${signalLabel(status.signal)})`,
       ].filter(Boolean).join(" | ");
       setStatusCard("wifiCard", Boolean(status.connected), "Wi-Fi do Raspberry", value, helper || "Sem rede Wi-Fi conectada no momento.");
       document.getElementById("disconnectButton").style.display = status.connected ? "inline-flex" : "none";
+    }
+
+    function renderPartnerStatus(status) {
+      currentPartnerStatus = status;
+      const sameNetwork = Boolean(status.same_network_as_raspberry);
+      const connected = Boolean(status.wifi_connected);
+      const value = connected ? (status.wifi_ssid || "Conectado") : (status.reachable ? "Sem rede" : "Sem resposta");
+      const helper = [
+        connected ? "Dell conectado" : (status.reachable ? "Dell sem Wi-Fi" : "Dell sem resposta"),
+        status.host ? `Host ${status.host}` : "",
+        status.wifi_ip ? `IP ${status.wifi_ip}` : "",
+        sameNetwork ? "Mesma rede do Raspberry" : "",
+        !sameNetwork && connected ? "Rede diferente do Raspberry" : "",
+      ].filter(Boolean).join(" | ");
+
+      setStatusCard(
+        "partnerCard",
+        Boolean(status.reachable && connected && sameNetwork),
+        "Wi-Fi do Dell",
+        value,
+        helper || status.message || "Sem leitura remota do Dell."
+      );
     }
 
     function renderInternetStatus(internet) {
@@ -687,8 +716,21 @@
         card.type = "button";
         card.className = "network-card";
         const badges = [];
+        const raspberryUsing = Boolean(network.in_use);
+        const dellUsing = Boolean(
+          currentPartnerStatus &&
+          currentPartnerStatus.wifi_connected &&
+          currentPartnerStatus.wifi_ssid &&
+          currentPartnerStatus.wifi_ssid === network.ssid
+        );
+
         if (network.saved) badges.push('<span class="pill">Senha salva</span>');
-        if (network.in_use) badges.push('<span class="pill">Em uso</span>');
+        if (raspberryUsing && dellUsing) {
+          badges.push('<span class="pill">Em uso nos dois</span>');
+        } else {
+          if (raspberryUsing) badges.push('<span class="pill">Em uso no Raspberry</span>');
+          if (dellUsing) badges.push('<span class="pill">Em uso no Dell</span>');
+        }
         card.innerHTML = `
           <div class="network-title">${network.ssid}</div>
           <div class="network-meta">
@@ -712,7 +754,10 @@
           }
 
           if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
-            showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai trocar automaticamente de rede.`, "warning", 4500);
+            const dellNote = currentPartnerStatus?.reachable
+              ? " O Dell tambem vai tentar acompanhar essa troca."
+              : " O Dell nao esta sendo lido agora, entao confirme depois se ele acompanhou.";
+            showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai trocar automaticamente de rede.${dellNote}`, "warning", 5200);
           }
 
           document.getElementById("password").focus();
@@ -726,6 +771,7 @@
       const status = await api("/api/status");
       renderControlChannel(status.control_channel || {});
       renderWifiStatus(status.wifi || {});
+      renderPartnerStatus(status.operator_peer || {});
       renderInternetStatus(status.internet || {});
       renderPublicStatus(status.public_access || {}, status.ngrok || {});
       renderOperatingMode(status.operating_mode || {});

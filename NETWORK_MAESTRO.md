@@ -75,12 +75,43 @@ Modelo de arquivo:
 Linha principal do atalho:
 
 ```ini
-Exec=sh -c 'xdg-open "$0://$1:5560"' http 10.10.10.2
+Exec=xdg-open http://10.10.10.2:5560/
 ```
 
 ## Observacao
 
 O maestro standalone usa os mesmos helpers de Wi-Fi do Raspberry, mas nao depende do `app.py` principal, nem de `SocketIO`, nem do template `base.html` do SmartokePy.
+
+## Sincronismo Dell + Raspberry
+
+O objetivo operacional do Maestro agora e manter o Dell e o Raspberry na mesma rede Wi-Fi sempre que o operador usar os botoes de conectar ou desconectar.
+
+Esse sincronismo acontece pelo cabo ponto a ponto:
+
+- Raspberry -> Dell via `ssh pi@10.10.10.1`
+- Dell altera o proprio Wi-Fi com `nmcli`
+- se o Dell nao acompanhar, o Maestro avisa erro em vez de fingir sucesso
+
+### Preparacao minima no Dell
+
+No Raspberry:
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+ssh-copy-id -i ~/.ssh/id_ed25519.pub pi@10.10.10.1
+ssh -o BatchMode=yes -o ConnectTimeout=5 pi@10.10.10.1 'echo SSH_OK'
+```
+
+No Dell:
+
+```bash
+chmod +x scripts/install_dell_wifi_sync_sudoers.sh
+sudo ./scripts/install_dell_wifi_sync_sudoers.sh
+```
+
+Sem essa preparacao, o Raspberry continua trocando o proprio Wi-Fi, mas o Maestro passa a avisar que o Dell nao acompanhou.
 
 ## Contrato para o portal
 

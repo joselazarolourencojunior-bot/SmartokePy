@@ -344,7 +344,6 @@ const handleNowPlayingUpdate = (np) => {
     idleTime = 0;
   }
   updateBackgroundMediaState();
-
   const video = getVideoPlayer();
 
   // Setup ASS subtitle file if found
@@ -408,11 +407,6 @@ const handleNowPlayingUpdate = (np) => {
     }
 
     video.load();
-    if (volume !== np.volume) {
-      volume = np.volume;
-      video.volume = volume;
-    }
-
     const duration = $("#duration");
     if (np.now_playing_duration) {
       duration.text(`/${formatTime(np.now_playing_duration)}`);

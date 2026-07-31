@@ -88,6 +88,19 @@
       setTimeout(function () {$("#notification-alt").removeClass(categoryClass)}, timeout + 750)
     }
 
+    function updateCurrentUserDisplay(user) {
+      const normalizedUser = (user || "").trim();
+
+      if (normalizedUser) {
+        $("#current-user span").text(normalizedUser);
+        $("#current-user").removeClass("is-hidden");
+        return;
+      }
+
+      $("#current-user span").text("");
+      $("#current-user").addClass("is-hidden");
+    }
+
     function setUserCookie(reload=false) {
       var user = Cookies.get("user");
       if (!user) {
@@ -99,8 +112,9 @@
           Cookies.set("user", name, { expires: 3650, path: '/' });
         }
         else {
-          Cookies.set("user", `Anon-${generateRandomString(4)}`, { expires: 3650 });
+          Cookies.set("user", `Anon-${generateRandomString(4)}`, { expires: 3650, path: '/' });
         }
+        updateCurrentUserDisplay(Cookies.get("user"));
         reload && location.reload();
       }
     }
@@ -109,7 +123,28 @@
       return Cookies.get("user");
     }
 
+    function applyUserFromQuery() {
+      try {
+        const currentUrl = new URL(window.location.href);
+        const queryUser = (currentUrl.searchParams.get("user") || "").trim();
+
+        if (!queryUser) {
+          return;
+        }
+
+        Cookies.set("user", queryUser, { expires: 3650, path: "/" });
+        updateCurrentUserDisplay(queryUser);
+        currentUrl.searchParams.delete("user");
+        const cleanedSearch = currentUrl.searchParams.toString();
+        const cleanedUrl = currentUrl.pathname + (cleanedSearch ? "?" + cleanedSearch : "") + currentUrl.hash;
+        window.history.replaceState({}, document.title, cleanedUrl);
+      } catch (error) {
+        console.warn("Failed to apply user from query parameter", error);
+      }
+    }
+
     $(function () {
+      applyUserFromQuery();
       connectSocket();
 
       $("#notification-close").click(function () {
@@ -142,11 +177,7 @@
 
       // handle current user display
       var currentUser = Cookies.get("user");
-
-      if (currentUser) {
-        $("#current-user span").text(currentUser)
-        $("#current-user").removeClass("is-hidden");
-      };
+      updateCurrentUserDisplay(currentUser);
 
       // Username change handler is now in spa-navigation.js
 
@@ -239,7 +270,7 @@
           </a>
           <a id="info" class="navbar-item" href="{{ url_for('info.info') }}">
             <i class="icon icon-info-circled-1" title="Info"></i>
-            <span>Pikaraoke</span>&nbsp;&nbsp;
+            <span>SmartokePy</span>&nbsp;&nbsp;
           </a>
         </div>
       </div>
