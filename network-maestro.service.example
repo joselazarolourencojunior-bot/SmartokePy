@@ -1,0 +1,16 @@
+[Unit]
+Description=Maestro de Rede do SmartokePy
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Environment=HOME=/home/pi
+Environment=NETWORK_MAESTRO_HOST=0.0.0.0
+Environment=NETWORK_MAESTRO_PORT=5560
+ExecStart=/usr/bin/python3 -m pikaraoke.network_maestro_app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,516 @@
+{% extends 'base.html' %}
+
+{% block scripts %}
+<script>
+  let currentWifiStatus = null;
+
+  async function fetchJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Falha ao carregar os dados do Wi-Fi.");
+    }
+    return data;
+  }
+
+  function signalLabel(signal) {
+    if (signal >= 80) return "Excelente";
+    if (signal >= 60) return "Boa";
+    if (signal >= 40) return "Media";
+    return "Fraca";
+  }
+
+  function renderStatus(status) {
+    const statusCard = $("#wifi-status-card");
+    const chip = $("#wifi-status-chip");
+    const details = $("#wifi-status-details");
+
+    statusCard.removeClass("is-hidden");
+
+    if (!status.supported) {
+      chip.text("Indisponivel").removeClass().addClass("tag is-danger is-medium");
+      details.html(`<p>${status.message || "Wi-Fi nao disponivel neste equipamento."}</p>`);
+      $("#disconnect-button").addClass("is-hidden");
+      return;
+    }
+
+    if (status.connected) {
+      chip.text("Conectado").removeClass().addClass("tag is-success is-medium");
+      $("#disconnect-button").removeClass("is-hidden");
+    } else {
+      chip.text("Sem internet Wi-Fi").removeClass().addClass("tag is-warning is-medium");
+      $("#disconnect-button").addClass("is-hidden");
+    }
+
+    const signalText = status.signal == null ? "-" : `${status.signal}% (${signalLabel(status.signal)})`;
+    const radioText = status.radio_enabled ? "Ligado" : "Desligado";
+    details.html(`
+      <div class="wifi-stat-grid">
+        <div class="wifi-stat-box">
+          <span class="wifi-stat-label">Rede atual</span>
+          <strong>${status.ssid || "Nenhuma"}</strong>
+        </div>
+        <div class="wifi-stat-box">
+          <span class="wifi-stat-label">Interface</span>
+          <strong>${status.device || "-"}</strong>
+        </div>
+        <div class="wifi-stat-box">
+          <span class="wifi-stat-label">IP Wi-Fi</span>
+          <strong>${status.ip_address || "-"}</strong>
+        </div>
+        <div class="wifi-stat-box">
+          <span class="wifi-stat-label">Sinal</span>
+          <strong>${signalText}</strong>
+        </div>
+        <div class="wifi-stat-box">
+          <span class="wifi-stat-label">Radio Wi-Fi</span>
+          <strong>${radioText}</strong>
+        </div>
+      </div>
+    `);
+  }
+
+  function renderNetworks(networks) {
+    const list = $("#wifi-network-list");
+    list.empty();
+
+    if (!networks.length) {
+      list.html('<div class="wifi-empty-state">Nenhuma rede encontrada agora. Tente atualizar a lista.</div>');
+      return;
+    }
+
+    networks.forEach((network) => {
+      const security = network.security && network.security !== "--" ? network.security : "Aberta";
+      const activeBadge = network.in_use ? '<span class="tag is-success is-light">Em uso</span>' : "";
+      const savedBadge = network.saved ? '<span class="tag is-info is-light">Senha salva</span>' : "";
+      const card = $(`
+        <button type="button" class="wifi-network-card">
+          <div class="wifi-network-main">
+            <div>
+              <div class="wifi-network-title">${network.ssid}</div>
+              <div class="wifi-network-meta">
+                <span>${security}</span>
+                <span>${network.signal}%</span>
+                <span>${signalLabel(network.signal)}</span>
+              </div>
+            </div>
+            <div>${savedBadge} ${activeBadge}</div>
+          </div>
+        </button>
+      `);
+
+      card.on("click", function() {
+        $("#ssid").val(network.ssid);
+        $("#password").val("");
+        $(".wifi-network-card").removeClass("is-selected");
+        $(this).addClass("is-selected");
+
+        if (network.saved && !network.in_use) {
+          showNotification(`Senha salva encontrada para ${network.ssid}. Conectando automaticamente...`, "is-info", 4000);
+          submitWifiConnection(network.ssid, "");
+          return;
+        }
+
+        if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
+          showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai sair automaticamente da rede ${currentWifiStatus.ssid}.`, "is-warning", 5000);
+        }
+
+        $("#password").focus();
+      });
+
+      list.append(card);
+    });
+  }
+
+  async function refreshStatus() {
+    const status = await fetchJson('{{ url_for("wifi_setup.wifi_status") }}');
+    currentWifiStatus = status;
+    renderStatus(status);
+    return status;
+  }
+
+  async function refreshNetworks(rescan = true) {
+    $("#refresh-networks").addClass("is-loading").prop("disabled", true);
+    try {
+      const data = await fetchJson(`{{ url_for("wifi_setup.wifi_networks") }}?rescan=${rescan ? "1" : "0"}`);
+      renderNetworks(data.networks || []);
+    } finally {
+      $("#refresh-networks").removeClass("is-loading").prop("disabled", false);
+    }
+  }
+
+  async function submitWifiConnection(ssid, password) {
+    $("#connect-button").addClass("is-loading").prop("disabled", true);
+    try {
+      const result = await fetchJson('{{ url_for("wifi_setup.wifi_connect") }}', {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ssid, password })
+      });
+
+      showNotification(result.message || "Tentativa de conexao enviada.", "is-success", 7000);
+      setTimeout(async () => {
+        try {
+          await refreshStatus();
+          await refreshNetworks(false);
+        } catch (error) {
+          showNotification(error.message, "is-danger", 6000);
+        }
+      }, 2500);
+    } catch (error) {
+      showNotification(error.message, "is-danger", 7000);
+    } finally {
+      $("#connect-button").removeClass("is-loading").prop("disabled", false);
+    }
+  }
+
+  $(async function() {
+    try {
+      await refreshStatus();
+      await refreshNetworks(true);
+    } catch (error) {
+      showNotification(error.message, "is-danger", 6000);
+    }
+
+    $("#refresh-networks").on("click", async function() {
+      try {
+        await refreshNetworks(true);
+        showNotification("Lista de redes atualizada.", "is-success");
+      } catch (error) {
+        showNotification(error.message, "is-danger", 6000);
+      }
+    });
+
+    $("#wifi-connect-form").on("submit", async function(event) {
+      event.preventDefault();
+      const ssid = $("#ssid").val().trim();
+      const password = $("#password").val();
+
+      if (!ssid) {
+        showNotification("Escolha ou digite o nome da rede Wi-Fi.", "is-warning");
+        return;
+      }
+
+      await submitWifiConnection(ssid, password);
+    });
+
+    $("#toggle-password").on("click", function() {
+      const input = $("#password");
+      const hidden = input.attr("type") === "password";
+      input.attr("type", hidden ? "text" : "password");
+      $(this).text(hidden ? "Ocultar senha" : "Mostrar senha");
+    });
+
+    $("#disconnect-button").on("click", async function() {
+      $("#disconnect-button").addClass("is-loading").prop("disabled", true);
+      try {
+        const result = await fetchJson('{{ url_for("wifi_setup.wifi_disconnect") }}', {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        showNotification(result.message || "Wi-Fi desconectado.", "is-success", 7000);
+        $("#ssid").val("");
+        $("#password").val("");
+        await refreshStatus();
+        await refreshNetworks(true);
+      } catch (error) {
+        showNotification(error.message, "is-danger", 7000);
+      } finally {
+        $("#disconnect-button").removeClass("is-loading").prop("disabled", false);
+      }
+    });
+  });
+</script>
+{% endblock %}
+
+{% block header %}
+<div class="wifi-hero">
+  <div>
+    <p class="wifi-kicker">Assistente de Wi-Fi</p>
+    <h1 class="wifi-title">Conectar o Raspberry ao Wi-Fi do local</h1>
+    <p class="wifi-subtitle">
+      Use esta tela no Dell, com o cabo Raspberry-Dell ligado. Assim voce configura a internet do Raspberry sem terminal e sem teclado.
+    </p>
+  </div>
+  <a class="button is-light is-rounded" href="{{ url_for('info.info') }}">
+    <i class="icon icon-left-circled"></i>&nbsp;Voltar
+  </a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="wifi-page">
+  <div class="wifi-panel">
+    <div class="wifi-panel-header">
+      <div>
+        <p class="wifi-panel-eyebrow">Estado atual</p>
+        <h3>Status do Raspberry</h3>
+      </div>
+      <div class="wifi-status-actions">
+        <span id="wifi-status-chip" class="tag is-medium">Carregando...</span>
+        <button id="disconnect-button" type="button" class="button is-danger is-light is-small is-hidden">
+          Desconectar Wi-Fi
+        </button>
+      </div>
+    </div>
+    <div id="wifi-status-card" class="is-hidden">
+      <div id="wifi-status-details"></div>
+    </div>
+    <div class="wifi-help-box">
+      <strong>Como usar:</strong> escolha uma rede da lista, digite a senha e toque em <em>Conectar agora</em>. Se ja estiver ligado em outra rede, use <em>Desconectar Wi-Fi</em> e depois atualize a lista. O cabo local continua funcionando para o controle do karaoke.
+    </div>
+  </div>
+
+  <div class="wifi-columns">
+    <section class="wifi-panel">
+      <div class="wifi-panel-header">
+        <div>
+          <p class="wifi-panel-eyebrow">Passo 1</p>
+          <h3>Redes encontradas</h3>
+        </div>
+        <button id="refresh-networks" class="button is-primary is-light is-rounded">
+          <i class="icon icon-exchange"></i>&nbsp;Atualizar lista
+        </button>
+      </div>
+      <div id="wifi-network-list" class="wifi-network-list">
+        <div class="wifi-empty-state">Procurando redes Wi-Fi...</div>
+      </div>
+    </section>
+
+    <section class="wifi-panel">
+      <div class="wifi-panel-header">
+        <div>
+          <p class="wifi-panel-eyebrow">Passo 2</p>
+          <h3>Conectar</h3>
+        </div>
+      </div>
+
+      <form id="wifi-connect-form" class="wifi-form">
+        <!-- Dummy fields reduce browser/password-manager autofill on the real Wi-Fi form. -->
+        <input type="text" name="fake-username" autocomplete="username" class="is-hidden" tabindex="-1" aria-hidden="true">
+        <input type="password" name="fake-password" autocomplete="current-password" class="is-hidden" tabindex="-1" aria-hidden="true">
+
+        <div class="field">
+          <label class="label" for="ssid">Nome da rede (SSID)</label>
+          <div class="control">
+            <input id="ssid" name="ssid" class="input is-medium" type="text" placeholder="Ex: WiFi do salao" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <p class="help">Voce pode clicar numa rede da lista ou digitar manualmente.</p>
+        </div>
+
+        <div class="field">
+          <label class="label" for="password">Senha</label>
+          <div class="control">
+            <input id="password" name="wifi-password" class="input is-medium" type="password" placeholder="Digite a senha do Wi-Fi" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <div class="wifi-inline-actions">
+            <button id="toggle-password" type="button" class="button is-small is-dark is-outlined">Mostrar senha</button>
+            <span class="help mb-0">Se a rede for aberta, deixe em branco. Se o navegador preencher sozinho, apague e digite manualmente.</span>
+          </div>
+        </div>
+
+        <button id="connect-button" type="submit" class="button is-primary is-medium is-fullwidth is-rounded">
+          <i class="icon icon-ok"></i>&nbsp;Conectar agora
+        </button>
+      </form>
+    </section>
+  </div>
+</div>
+
+<style>
+  .wifi-page {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .wifi-hero {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .wifi-kicker {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #8ab4ff;
+    font-size: 0.8rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .wifi-title {
+    font-size: 2rem;
+    line-height: 1.1;
+    margin-bottom: 0.5rem;
+  }
+
+  .wifi-subtitle {
+    max-width: 760px;
+    color: #bac4d6;
+    margin: 0;
+  }
+
+  .wifi-columns {
+    display: grid;
+    grid-template-columns: 1.2fr 0.9fr;
+    gap: 1rem;
+  }
+
+  .wifi-panel {
+    background: linear-gradient(180deg, rgba(25, 31, 42, 0.95), rgba(14, 18, 25, 0.98));
+    border: 1px solid rgba(138, 180, 255, 0.12);
+    border-radius: 22px;
+    padding: 1.2rem;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+  }
+
+  .wifi-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .wifi-status-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .wifi-panel-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    color: #88c4ff;
+    margin-bottom: 0.25rem;
+  }
+
+  .wifi-panel h3 {
+    font-size: 1.25rem;
+    margin: 0;
+  }
+
+  .wifi-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem;
+  }
+
+  .wifi-stat-box {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    padding: 0.9rem 1rem;
+  }
+
+  .wifi-stat-label {
+    display: block;
+    color: #92a0b8;
+    font-size: 0.8rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .wifi-help-box {
+    margin-top: 1rem;
+    border-radius: 16px;
+    padding: 0.9rem 1rem;
+    background: rgba(30, 144, 255, 0.08);
+    border: 1px solid rgba(30, 144, 255, 0.16);
+    color: #d7e7ff;
+  }
+
+  .wifi-network-list {
+    display: grid;
+    gap: 0.75rem;
+    max-height: 560px;
+    overflow: auto;
+    padding-right: 0.25rem;
+  }
+
+  .wifi-network-card {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.03);
+    color: inherit;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 18px;
+    padding: 1rem;
+    cursor: pointer;
+    text-align: left;
+    transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+  }
+
+  .wifi-network-card:hover,
+  .wifi-network-card.is-selected {
+    transform: translateY(-1px);
+    border-color: rgba(93, 195, 255, 0.5);
+    background: rgba(93, 195, 255, 0.08);
+  }
+
+  .wifi-network-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .wifi-network-title {
+    font-size: 1.06rem;
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+  }
+
+  .wifi-network-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    color: #aebad0;
+    font-size: 0.9rem;
+  }
+
+  .wifi-network-meta i {
+    margin-right: 0.25rem;
+  }
+
+  .wifi-empty-state {
+    border: 1px dashed rgba(255, 255, 255, 0.14);
+    border-radius: 18px;
+    padding: 1.4rem;
+    color: #9eacc4;
+    text-align: center;
+  }
+
+  .wifi-form .field + .field {
+    margin-top: 1rem;
+  }
+
+  .wifi-inline-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.65rem;
+    flex-wrap: wrap;
+  }
+
+  @media screen and (max-width: 900px) {
+    .wifi-columns {
+      grid-template-columns: 1fr;
+    }
+
+    .wifi-hero,
+    .wifi-panel-header,
+    .wifi-network-main,
+    .wifi-status-actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .wifi-stat-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+{% endblock %}

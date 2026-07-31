@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>{% if title %}{{ title }}{% else %}Maestro de Rede{% endif %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: rgba(15, 23, 42, 0.95);
+      --panel-soft: rgba(255, 255, 255, 0.04);
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e5eefc;
+      --muted: #9fb0cc;
+      --accent: #60a5fa;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(96, 165, 250, 0.18), transparent 28%),
+        linear-gradient(180deg, #020617 0%, #0b1220 100%);
+      color: var(--text);
+    }
+
+    .page {
+      width: min(1200px, calc(100% - 24px));
+      margin: 0 auto;
+      padding: 20px 0 32px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+    }
+
+    .hero {
+      padding: 22px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .kicker {
+      margin: 0 0 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: #93c5fd;
+      font-size: 12px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 34px;
+      line-height: 1.1;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+    }
+
+    .button:hover { transform: translateY(-1px); }
+    .button:disabled { opacity: 0.55; cursor: wait; transform: none; }
+
+    .button-primary { background: var(--accent); color: #06101f; }
+    .button-soft { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+    .button-danger { background: rgba(248, 113, 113, 0.15); color: #fecaca; }
+
+    .panel { padding: 18px; }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .eyebrow {
+      margin: 0 0 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 11px;
+      color: #93c5fd;
+    }
+
+    .panel h2, .panel h3 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .grid-3,
+    .grid-4,
+    .grid-2 {
+      display: grid;
+      gap: 12px;
+    }
+
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .status-card,
+    .detail-box,
+    .network-card,
+    .notification {
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+    }
+
+    .status-card {
+      padding: 16px;
+    }
+
+    .status-card.success {
+      border-color: rgba(52, 211, 153, 0.35);
+      background: rgba(52, 211, 153, 0.08);
+    }
+
+    .status-card.warning {
+      border-color: rgba(251, 191, 36, 0.28);
+      background: rgba(251, 191, 36, 0.08);
+    }
+
+    .card-label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .card-value {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 6px;
+    }
+
+    .card-helper {
+      margin: 0;
+      color: #c6d2e7;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .detail-box {
+      padding: 16px;
+    }
+
+    .mini-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .mini-row {
+      display: grid;
+      gap: 4px;
+      color: #c6d2e7;
+      font-size: 14px;
+      word-break: break-word;
+    }
+
+    .mini-row strong { color: #fff; }
+    .mini-row a {
+      color: #93c5fd;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .mini-row a:hover { text-decoration: underline; }
+    .empty { color: var(--muted); }
+
+    .compact-links {
+      display: grid;
+      gap: 8px;
+    }
+
+    .compact-link-item {
+      display: grid;
+      gap: 3px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    .compact-link-item a {
+      color: #93c5fd;
+      text-decoration: none;
+      word-break: break-all;
+      font-size: 13px;
+    }
+
+    .compact-link-item span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .section-divider {
+      margin-top: 6px;
+      color: #fff;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .layout-2 {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: 1.15fr 0.85fr;
+    }
+
+    .network-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .network-card {
+      width: 100%;
+      text-align: left;
+      padding: 14px 16px;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    .network-card:hover,
+    .network-card.selected {
+      border-color: rgba(96, 165, 250, 0.44);
+      background: rgba(96, 165, 250, 0.10);
+    }
+
+    .network-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .network-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: #c6d2e7;
+      font-size: 13px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+
+    .form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field { display: grid; gap: 6px; }
+    .label { font-weight: 700; }
+    .help { color: var(--muted); font-size: 13px; line-height: 1.4; }
+
+    .input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(2, 6, 23, 0.6);
+      color: var(--text);
+      padding: 14px 16px;
+      font-size: 15px;
+    }
+
+    .inline-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .mode-banner {
+      display: grid;
+      gap: 8px;
+      border-radius: 20px;
+      padding: 16px 18px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      margin-bottom: 14px;
+    }
+
+    .mode-banner.success {
+      border-color: rgba(52, 211, 153, 0.35);
+      background: rgba(52, 211, 153, 0.08);
+    }
+
+    .mode-banner.warning {
+      border-color: rgba(251, 191, 36, 0.28);
+      background: rgba(251, 191, 36, 0.08);
+    }
+
+    .mode-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      color: #d8e2f4;
+      font-size: 14px;
+    }
+
+    .notification {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      min-width: 280px;
+      max-width: min(460px, calc(100vw - 32px));
+      padding: 14px 16px;
+      display: none;
+      z-index: 30;
+    }
+
+    .notification.success { border-color: rgba(52, 211, 153, 0.4); background: rgba(5, 46, 33, 0.96); }
+    .notification.warning { border-color: rgba(251, 191, 36, 0.4); background: rgba(66, 32, 6, 0.96); }
+    .notification.danger { border-color: rgba(248, 113, 113, 0.4); background: rgba(69, 10, 10, 0.96); }
+
+    @media (max-width: 1024px) {
+      .grid-3,
+      .grid-2,
+      .layout-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <div>
+        <p class="kicker">Maestro de Rede</p>
+        <h1>Painel independente do operador</h1>
+      </div>
+      <div class="hero-actions">
+        <button id="refreshStatusButton" class="button button-primary">Atualizar agora</button>
+        <button id="refreshNetworksButton" class="button button-soft">Atualizar redes</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Diagnostico ao vivo</p>
+          <h2>Estado geral da rede</h2>
+        </div>
+        <span class="tag">Atualizado <strong id="lastUpdate">--:--:--</strong></span>
+      </div>
+
+      <div id="modeBanner" class="mode-banner warning">
+        <div class="mini-row">
+          <strong id="modeTitle">Carregando modo operacional...</strong>
+        </div>
+        <div class="mode-grid">
+          <span><strong>Operador:</strong> <span id="modeOperatorChannel">--</span></span>
+          <span><strong>Clientes:</strong> <span id="modeClientChannel">--</span></span>
+          <span style="grid-column: 1 / -1;"><strong>Status:</strong> <span id="modeNextStep">--</span></span>
+        </div>
+      </div>
+
+      <div class="grid-4">
+        <div id="controlCard" class="status-card warning">
+          <span class="card-label">Canal de controle</span>
+          <strong class="card-value">Carregando...</strong>
+          <p class="card-helper">Aguardando diagnostico.</p>
+        </div>
+        <div id="wifiCard" class="status-card warning">
+          <span class="card-label">Wi-Fi do Raspberry</span>
+          <strong class="card-value">Carregando...</strong>
+          <p class="card-helper">Aguardando diagnostico.</p>
+        </div>
+        <div id="internetCard" class="status-card warning">
+          <span class="card-label">Internet</span>
+          <strong class="card-value">Carregando...</strong>
+          <p class="card-helper">Aguardando diagnostico.</p>
+        </div>
+        <div id="publicCard" class="status-card warning">
+          <span class="card-label">Acesso dos clientes</span>
+          <strong class="card-value">Carregando...</strong>
+          <p class="card-helper">Aguardando diagnostico.</p>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top: 12px;">
+        <div class="detail-box">
+          <div class="panel-header" style="margin-bottom: 12px;">
+            <div>
+              <p class="eyebrow">Canal adicional</p>
+              <h3>Cabo</h3>
+            </div>
+            <span class="tag">Backup</span>
+          </div>
+          <div id="controlDetails" class="mini-list">
+            <div class="empty">Carregando status do cabo...</div>
+          </div>
+        </div>
+
+        <div class="detail-box">
+          <div class="panel-header" style="margin-bottom: 12px;">
+            <div>
+              <p class="eyebrow">Servico separado</p>
+              <h3>Links</h3>
+            </div>
+            <span class="tag">Operacao</span>
+          </div>
+          <div id="serviceDetails" class="mini-list">
+            <div class="empty">Carregando links do servico...</div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <div class="layout-2">
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Passo 1</p>
+            <h2>Redes</h2>
+          </div>
+          <span class="tag">Ao vivo</span>
+        </div>
+
+        <div id="networkList" class="network-list">
+          <div class="empty">Procurando redes Wi-Fi...</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Passo 2</p>
+            <h2>Wi-Fi do Raspberry</h2>
+          </div>
+          <button id="disconnectButton" class="button button-danger" style="display:none;">Desconectar Wi-Fi</button>
+        </div>
+
+        <form id="wifiForm" class="form">
+          <div class="field">
+            <label class="label" for="ssid">Nome da rede (SSID)</label>
+            <input id="ssid" class="input" type="text" placeholder="Ex: WiFi do salao" autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="field">
+            <label class="label" for="password">Senha</label>
+            <input id="password" class="input" type="password" placeholder="Digite a senha do Wi-Fi" autocomplete="new-password" spellcheck="false">
+            <div class="inline-actions">
+              <button id="togglePasswordButton" type="button" class="button button-soft">Mostrar senha</button>
+            </div>
+          </div>
+
+          <button id="connectButton" class="button button-primary" type="submit">Conectar agora</button>
+        </form>
+      </section>
+    </div>
+  </div>
+
+  <div id="notification" class="notification"></div>
+
+  <script>
+    let currentWifiStatus = null;
+    let statusTimer = null;
+
+    function signalLabel(signal) {
+      if (signal >= 80) return "Excelente";
+      if (signal >= 60) return "Boa";
+      if (signal >= 40) return "Media";
+      return "Fraca";
+    }
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, options);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Falha ao carregar os dados.");
+      }
+      return data;
+    }
+
+    function showNotification(message, tone = "success", timeout = 3800) {
+      const box = document.getElementById("notification");
+      box.className = `notification ${tone}`;
+      box.textContent = message;
+      box.style.display = "block";
+      window.clearTimeout(box._timer);
+      box._timer = window.setTimeout(() => {
+        box.style.display = "none";
+      }, timeout);
+    }
+
+    function setStatusCard(elementId, active, label, value, helper) {
+      const node = document.getElementById(elementId);
+      node.classList.remove("success", "warning");
+      node.classList.add(active ? "success" : "warning");
+      node.querySelector(".card-label").textContent = label;
+      node.querySelector(".card-value").textContent = value;
+      node.querySelector(".card-helper").textContent = helper;
+    }
+
+    function renderControlChannel(control) {
+      const primary = control.primary || {};
+      const value = primary.ipv4 || primary.name || "Sem link";
+      const helper = [
+        primary.name ? `Interface ${primary.name}` : "",
+        primary.ipv4 ? `IP ${primary.ipv4}` : "",
+        primary.speed_mbps ? `${primary.speed_mbps} Mbps` : ""
+      ].filter(Boolean).join(" | ");
+      setStatusCard("controlCard", Boolean(control.ready), "Canal de controle", value, helper || "Canal por cabo indisponivel.");
+
+      const detail = document.getElementById("controlDetails");
+      if (!control.interfaces || !control.interfaces.length) {
+        detail.innerHTML = '<div class="empty">Nenhuma interface de cabo detectada.</div>';
+        return;
+      }
+
+      detail.innerHTML = control.interfaces.map((item) => `
+        <div class="mini-row">
+          <strong>${item.name}</strong>
+          <span>${item.ipv4 || "-"}</span>
+          <span>${item.is_up ? "Link ativo" : "Sem link"}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderWifiStatus(status) {
+      currentWifiStatus = status;
+      const value = status.connected ? (status.ssid || "Conectado") : "Sem rede";
+      const helper = [
+        status.device ? `Interface ${status.device}` : "",
+        status.ip_address ? `IP ${status.ip_address}` : "",
+        status.signal == null ? "" : `Sinal ${status.signal}% (${signalLabel(status.signal)})`,
+      ].filter(Boolean).join(" | ");
+      setStatusCard("wifiCard", Boolean(status.connected), "Wi-Fi do Raspberry", value, helper || "Sem rede Wi-Fi conectada no momento.");
+      document.getElementById("disconnectButton").style.display = status.connected ? "inline-flex" : "none";
+    }
+
+    function renderInternetStatus(internet) {
+      setStatusCard(
+        "internetCard",
+        Boolean(internet.online),
+        "Internet",
+        internet.online ? "Disponivel" : "Indisponivel",
+        internet.online ? "Online" : "Offline"
+      );
+    }
+
+    function renderPublicStatus(publicAccess, ngrok) {
+      const publicValue = publicAccess.ready ? "Via internet" : "Operador local";
+      const helper = [
+        ngrok.online && ngrok.public_url ? ngrok.public_url : "",
+      ].filter(Boolean).join(" | ");
+
+      setStatusCard(
+        "publicCard",
+        Boolean(publicAccess.ready),
+        "Acesso dos clientes",
+        publicValue,
+        helper || "Sem caminho publico confirmado agora."
+      );
+    }
+
+    function renderOperatingMode(mode) {
+      const banner = document.getElementById("modeBanner");
+      banner.classList.remove("success", "warning");
+      banner.classList.add(mode.ready ? "success" : "warning");
+      document.getElementById("modeTitle").textContent = mode.title || "Modo operacional";
+      document.getElementById("modeOperatorChannel").textContent = mode.operator_channel || "--";
+      document.getElementById("modeClientChannel").textContent = mode.client_channel || "--";
+      document.getElementById("modeNextStep").textContent = mode.code || "--";
+    }
+
+    function renderOperationalLinks(access, ngrok, links) {
+      const detail = document.getElementById("serviceDetails");
+      const localLinks = links.local || [];
+      const publicLinks = links.public || [];
+      let html = `<div class="compact-links">`;
+
+      html += `
+        <div class="section-divider">Maestro</div>
+        <div class="compact-link-item">
+          <strong>Painel</strong>
+          <a href="${access.panel_url || "#"}" target="_blank" rel="noreferrer">${access.panel_url || "--"}</a>
+          <span>${access.health_url || "--"}</span>
+        </div>
+      `;
+
+      if (ngrok && ngrok.public_url) {
+        html += `
+          <div class="section-divider">Ngrok</div>
+          <div class="compact-link-item">
+            <strong>Publico</strong>
+            <a href="${ngrok.public_url}" target="_blank" rel="noreferrer">${ngrok.public_url}</a>
+            <span>${ngrok.target || "--"}</span>
+          </div>
+        `;
+      }
+
+      if (localLinks.length) {
+        html += `<div class="section-divider">Local</div>`;
+        html += localLinks.map((item) => `
+          <div class="compact-link-item">
+            <strong>${item.label}</strong>
+            <a href="${item.url}" target="_blank" rel="noreferrer">${item.url}</a>
+          </div>
+        `).join("");
+      }
+
+      if (publicLinks.length) {
+        html += `<div class="section-divider">Publico</div>`;
+        html += publicLinks.map((item) => `
+          <div class="compact-link-item">
+            <strong>${item.label}</strong>
+            <a href="${item.url}" target="_blank" rel="noreferrer">${item.url}</a>
+          </div>
+        `).join("");
+      } else {
+        html += `
+          <div class="section-divider">Publico</div>
+          <div class="compact-link-item">
+            <strong>Indisponivel</strong>
+          </div>
+        `;
+      }
+
+      html += `</div>`;
+      detail.innerHTML = html;
+    }
+
+    function renderNetworks(networks) {
+      const list = document.getElementById("networkList");
+      if (!networks.length) {
+        list.innerHTML = '<div class="empty">Nenhuma rede encontrada agora. Atualize a lista.</div>';
+        return;
+      }
+
+      list.innerHTML = "";
+      networks.forEach((network) => {
+        const security = network.security && network.security !== "--" ? network.security : "Aberta";
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "network-card";
+        const badges = [];
+        if (network.saved) badges.push('<span class="pill">Senha salva</span>');
+        if (network.in_use) badges.push('<span class="pill">Em uso</span>');
+        card.innerHTML = `
+          <div class="network-title">${network.ssid}</div>
+          <div class="network-meta">
+            <span>${security}</span>
+            <span>${network.signal}%</span>
+            <span>${signalLabel(network.signal)}</span>
+            ${badges.join("")}
+          </div>
+        `;
+
+        card.addEventListener("click", () => {
+          document.querySelectorAll(".network-card").forEach((item) => item.classList.remove("selected"));
+          card.classList.add("selected");
+          document.getElementById("ssid").value = network.ssid;
+          document.getElementById("password").value = "";
+
+          if (network.saved && !network.in_use) {
+            showNotification(`Senha salva encontrada para ${network.ssid}. Conectando automaticamente...`, "success", 4200);
+            submitWifiConnection(network.ssid, "");
+            return;
+          }
+
+          if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
+            showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai trocar automaticamente de rede.`, "warning", 4500);
+          }
+
+          document.getElementById("password").focus();
+        });
+
+        list.appendChild(card);
+      });
+    }
+
+    async function refreshStatus(showToast = false) {
+      const status = await api("/api/status");
+      renderControlChannel(status.control_channel || {});
+      renderWifiStatus(status.wifi || {});
+      renderInternetStatus(status.internet || {});
+      renderPublicStatus(status.public_access || {}, status.ngrok || {});
+      renderOperatingMode(status.operating_mode || {});
+      renderOperationalLinks(status.access || {}, status.ngrok || {}, status.operational_links || {});
+      document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString("pt-BR");
+      if (showToast) {
+        showNotification("Diagnostico do maestro atualizado.");
+      }
+    }
+
+    async function refreshNetworks(showToast = false) {
+      const button = document.getElementById("refreshNetworksButton");
+      button.disabled = true;
+      try {
+        const data = await api("/api/wifi/networks?rescan=1");
+        renderNetworks(data.networks || []);
+        if (showToast) {
+          showNotification("Lista de redes atualizada.");
+        }
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function submitWifiConnection(ssid, password) {
+      const button = document.getElementById("connectButton");
+      button.disabled = true;
+      try {
+        const result = await api("/api/wifi/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ssid, password })
+        });
+        showNotification(result.message || "Tentativa de conexao enviada.");
+        window.setTimeout(async () => {
+          try {
+            await refreshStatus();
+            const data = await api("/api/wifi/networks?rescan=0");
+            renderNetworks(data.networks || []);
+          } catch (error) {
+            showNotification(error.message, "danger", 6000);
+          }
+        }, 2500);
+      } catch (error) {
+        showNotification(error.message, "danger", 6500);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function disconnectWifi() {
+      const button = document.getElementById("disconnectButton");
+      button.disabled = true;
+      try {
+        const result = await api("/api/wifi/disconnect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        showNotification(result.message || "Wi-Fi desconectado.");
+        document.getElementById("ssid").value = "";
+        document.getElementById("password").value = "";
+        await refreshStatus();
+        await refreshNetworks();
+      } catch (error) {
+        showNotification(error.message, "danger", 6500);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function setupEvents() {
+      document.getElementById("refreshStatusButton").addEventListener("click", async () => {
+        try {
+          await refreshStatus(true);
+        } catch (error) {
+          showNotification(error.message, "danger", 6000);
+        }
+      });
+
+      document.getElementById("refreshNetworksButton").addEventListener("click", async () => {
+        try {
+          await refreshNetworks(true);
+        } catch (error) {
+          showNotification(error.message, "danger", 6000);
+        }
+      });
+
+      document.getElementById("togglePasswordButton").addEventListener("click", () => {
+        const input = document.getElementById("password");
+        const hidden = input.type === "password";
+        input.type = hidden ? "text" : "password";
+        document.getElementById("togglePasswordButton").textContent = hidden ? "Ocultar senha" : "Mostrar senha";
+      });
+
+      document.getElementById("disconnectButton").addEventListener("click", async () => {
+        await disconnectWifi();
+      });
+
+      document.getElementById("wifiForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const ssid = document.getElementById("ssid").value.trim();
+        const password = document.getElementById("password").value;
+        if (!ssid) {
+          showNotification("Escolha ou digite o nome da rede Wi-Fi.", "warning", 4200);
+          return;
+        }
+        await submitWifiConnection(ssid, password);
+      });
+    }
+
+    async function boot() {
+      setupEvents();
+      try {
+        await refreshStatus();
+        await refreshNetworks();
+      } catch (error) {
+        showNotification(error.message, "danger", 6500);
+      }
+
+      statusTimer = window.setInterval(async () => {
+        try {
+          await refreshStatus();
+        } catch (_error) {
+          // Mantem o painel vivo mesmo se uma sondagem falhar.
+        }
+      }, 5000);
+    }
+
+    window.addEventListener("beforeunload", () => {
+      if (statusTimer) {
+        window.clearInterval(statusTimer);
+      }
+    });
+
+    boot();
+  </script>
+</body>
+</html>

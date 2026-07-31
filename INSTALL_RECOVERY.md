@@ -159,6 +159,45 @@ sudo systemctl enable --now karaoke-internet
 curl -s http://127.0.0.1:4040/api/tunnels
 ```
 
+### 3.7 Maestro de Rede separado
+
+Servico sugerido:
+
+`/etc/systemd/system/network-maestro.service`
+
+Arquivo base no projeto:
+
+`network-maestro.service.example`
+
+Healthcheck local:
+
+```text
+http://127.0.0.1:5560/health
+```
+
+Aplicar:
+
+```bash
+sudo cp /home/pi/SmartokePy/network-maestro.service.example /etc/systemd/system/network-maestro.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now network-maestro.service
+systemctl status network-maestro.service --no-pager -l | head -n 20
+curl http://127.0.0.1:5560/health
+```
+
+Instalador automatizado:
+
+```bash
+chmod +x /home/pi/SmartokePy/scripts/install_network_maestro_rpi.sh
+/home/pi/SmartokePy/scripts/install_network_maestro_rpi.sh
+```
+
+Atalho do Dell:
+
+```ini
+Exec=sh -c 'xdg-open "$0://$1:5560"' http 10.10.10.2
+```
+
 ## 4. Dell - Configuracao de Sistema
 
 ### 4.1 Pacotes base

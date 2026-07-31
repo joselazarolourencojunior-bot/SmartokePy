@@ -315,6 +315,40 @@
 		</div>
 	</div>
 
+        {% if network_maestro_available %}
+                <h1>Maestro de Rede</h1>
+
+                <div class="card">
+                        <div class="card-content">
+                                <div class="content">
+                                        <p>
+                                                Painel continuo para o Dell monitorar cabo, Wi-Fi do Raspberry e internet do local sem depender de terminal.
+                                        </p>
+                                        <a class="button is-link is-rounded" href="{{ url_for('network_maestro.network_maestro') }}">
+                                                Abrir maestro de rede
+                                        </a>
+                                </div>
+                        </div>
+                </div>
+        {% endif %}
+
+        {% if wifi_setup_available %}
+                <h1>Assistente Wi-Fi</h1>
+
+                <div class="card">
+                        <div class="card-content">
+                                <div class="content">
+                                        <p>
+                                                Configure o Wi-Fi do Raspberry a partir desta interface visual, usando o Dell ligado pelo cabo local.
+                                        </p>
+                                        <a class="button is-primary is-rounded" href="{{ url_for('wifi_setup.wifi_setup') }}">
+                                                Abrir assistente Wi-Fi
+                                        </a>
+                                </div>
+                        </div>
+                </div>
+        {% endif %}
+
 	{% if not admin and admin_password != none %}
 		{# MSG: Title of the admin section. #}
 		<h1>{% trans %}Admin{% endtrans %}</h1>

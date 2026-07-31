@@ -2,7 +2,7 @@
 
 import flask_babel
 import psutil
-from flask import jsonify, render_template
+from flask import current_app, jsonify, render_template
 from flask_smorest import Blueprint
 
 from pikaraoke import VERSION
@@ -83,6 +83,8 @@ def info():
             "mid": k.mid_score_phrases,
             "high": k.high_score_phrases,
         },
+        network_maestro_available="network_maestro.network_maestro" in current_app.view_functions,
+        wifi_setup_available="wifi_setup.wifi_setup" in current_app.view_functions,
         mic_available=k.sound_manager.available,
         mic_passthrough_enabled=k.enable_mic_passthrough,
     )

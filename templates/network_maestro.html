@@ -1,0 +1,672 @@
+{% extends 'base.html' %}
+
+{% block scripts %}
+<script>
+  let currentWifiStatus = null;
+  let statusTimer = null;
+  const wifiSetupAvailable = {{ 'true' if wifi_setup_available else 'false' }};
+  const wifiNetworksUrl = {{ wifi_networks_url|tojson }};
+  const wifiConnectUrl = {{ wifi_connect_url|tojson }};
+  const wifiDisconnectUrl = {{ wifi_disconnect_url|tojson }};
+
+  async function fetchJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Falha ao carregar os dados de rede.");
+    }
+    return data;
+  }
+
+  function signalLabel(signal) {
+    if (signal >= 80) return "Excelente";
+    if (signal >= 60) return "Boa";
+    if (signal >= 40) return "Media";
+    return "Fraca";
+  }
+
+  function statusBadgeClass(active) {
+    return active ? "is-success" : "is-warning";
+  }
+
+  function renderCard(selector, label, value, helper, active) {
+    const card = $(selector);
+    card.find(".maestro-card-label").text(label);
+    card.find(".maestro-card-value").text(value);
+    card.find(".maestro-card-helper").text(helper);
+    card.removeClass("is-success is-warning").addClass(statusBadgeClass(active));
+  }
+
+  function renderControlChannel(controlChannel) {
+    const primary = controlChannel.primary || {};
+    const value = primary.ipv4 || primary.name || "Sem link";
+    const helperParts = [
+      controlChannel.message || "",
+      primary.name ? `Interface ${primary.name}` : "",
+      primary.speed_mbps ? `${primary.speed_mbps} Mbps` : ""
+    ].filter(Boolean);
+
+    renderCard(
+      "#control-channel-card",
+      "Canal de controle",
+      value,
+      helperParts.join(" | ") || "Canal por cabo indisponivel.",
+      Boolean(controlChannel.ready)
+    );
+
+    const detail = $("#control-channel-detail");
+    if (!controlChannel.interfaces || !controlChannel.interfaces.length) {
+      detail.html('<div class="maestro-empty">Nenhuma interface de cabo detectada.</div>');
+      return;
+    }
+
+    detail.html(
+      controlChannel.interfaces.map((item) => `
+        <div class="maestro-mini-row">
+          <strong>${item.name}</strong>
+          <span>${item.ipv4 || "-"}</span>
+          <span>${item.is_up ? "Link ativo" : "Sem link"}</span>
+        </div>
+      `).join("")
+    );
+  }
+
+  function renderWifiStatus(status) {
+    currentWifiStatus = status;
+
+    const value = status.connected ? (status.ssid || "Conectado") : "Sem rede";
+    const helperParts = [
+      status.device ? `Interface ${status.device}` : "",
+      status.ip_address ? `IP ${status.ip_address}` : "",
+      status.signal == null ? "" : `Sinal ${status.signal}% (${signalLabel(status.signal)})`,
+      status.message || ""
+    ].filter(Boolean);
+
+    renderCard(
+      "#wifi-status-card",
+      "Wi-Fi do Raspberry",
+      value,
+      helperParts.join(" | ") || "Sem rede Wi-Fi conectada no momento.",
+      Boolean(status.connected)
+    );
+
+    $("#disconnect-button").toggleClass("is-hidden", !status.connected);
+  }
+
+  function renderInternetStatus(internet) {
+    renderCard(
+      "#internet-status-card",
+      "Internet",
+      internet.online ? "Disponivel" : "Indisponivel",
+      internet.message || "",
+      Boolean(internet.online)
+    );
+  }
+
+  function renderAccessStatus(access) {
+    const list = $("#maestro-access-list");
+    const entries = [
+      ["Painel maestro", access.panel_url],
+      ["Splash", access.splash_url],
+      ["Fila", access.queue_url],
+      ["Info", access.info_url]
+    ];
+    if (access.wifi_setup_url) {
+      entries.splice(1, 0, ["Assistente Wi-Fi", access.wifi_setup_url]);
+    }
+
+    list.html(entries.map(([label, value]) => `
+      <div class="maestro-mini-row maestro-mini-row-links">
+        <strong>${label}</strong>
+        <span>${value}</span>
+      </div>
+    `).join(""));
+  }
+
+  function renderNetworks(networks) {
+    const list = $("#wifi-network-list");
+    list.empty();
+
+    if (!networks.length) {
+      list.html('<div class="maestro-empty">Nenhuma rede encontrada agora. Atualize a lista.</div>');
+      return;
+    }
+
+    networks.forEach((network) => {
+      const security = network.security && network.security !== "--" ? network.security : "Aberta";
+      const activeBadge = network.in_use ? '<span class="tag is-success is-light">Em uso</span>' : "";
+      const savedBadge = network.saved ? '<span class="tag is-info is-light">Senha salva</span>' : "";
+      const card = $(`
+        <button type="button" class="maestro-network-card">
+          <div class="maestro-network-title">${network.ssid}</div>
+          <div class="maestro-network-meta">
+            <span>${security}</span>
+            <span>${network.signal}%</span>
+            <span>${signalLabel(network.signal)}</span>
+            <span>${savedBadge} ${activeBadge}</span>
+          </div>
+        </button>
+      `);
+
+      card.on("click", function() {
+        $("#ssid").val(network.ssid);
+        $("#password").val("");
+        $(".maestro-network-card").removeClass("is-selected");
+        $(this).addClass("is-selected");
+
+        if (network.saved && !network.in_use) {
+          showNotification(`Senha salva encontrada para ${network.ssid}. Conectando automaticamente...`, "is-info", 4000);
+          submitWifiConnection(network.ssid, "");
+          return;
+        }
+
+        if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
+          showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai trocar automaticamente de rede.`, "is-warning", 4500);
+        }
+
+        $("#password").focus();
+      });
+
+      list.append(card);
+    });
+  }
+
+  async function refreshStatus(showToast = false) {
+    const status = await fetchJson('{{ url_for("network_maestro.network_maestro_status") }}');
+    renderControlChannel(status.control_channel || {});
+    renderWifiStatus(status.wifi || {});
+    renderInternetStatus(status.internet || {});
+    renderAccessStatus(status.access || {});
+    $("#last-update").text(new Date().toLocaleTimeString("pt-BR"));
+    if (showToast) {
+      showNotification("Diagnostico do maestro atualizado.", "is-success");
+    }
+  }
+
+  async function refreshNetworks(rescan = true) {
+    if (!wifiSetupAvailable) {
+      return;
+    }
+    $("#refresh-networks").addClass("is-loading").prop("disabled", true);
+    try {
+      const data = await fetchJson(`${wifiNetworksUrl}?rescan=${rescan ? "1" : "0"}`);
+      renderNetworks(data.networks || []);
+    } finally {
+      $("#refresh-networks").removeClass("is-loading").prop("disabled", false);
+    }
+  }
+
+  async function submitWifiConnection(ssid, password) {
+    if (!wifiSetupAvailable) {
+      showNotification("O comando de Wi-Fi so fica disponivel no Raspberry com o assistente instalado.", "is-warning", 6000);
+      return;
+    }
+    $("#connect-button").addClass("is-loading").prop("disabled", true);
+    try {
+      const result = await fetchJson(wifiConnectUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ssid, password })
+      });
+
+      showNotification(result.message || "Tentativa de conexao enviada.", "is-success", 7000);
+      setTimeout(async () => {
+        try {
+          await refreshStatus();
+          await refreshNetworks(false);
+        } catch (error) {
+          showNotification(error.message, "is-danger", 6000);
+        }
+      }, 2500);
+    } catch (error) {
+      showNotification(error.message, "is-danger", 7000);
+    } finally {
+      $("#connect-button").removeClass("is-loading").prop("disabled", false);
+    }
+  }
+
+  $(async function() {
+    try {
+      await refreshStatus();
+      if (wifiSetupAvailable) {
+        await refreshNetworks(true);
+      }
+    } catch (error) {
+      showNotification(error.message, "is-danger", 6000);
+    }
+
+    statusTimer = setInterval(async () => {
+      try {
+        await refreshStatus();
+      } catch (error) {
+        console.error(error);
+      }
+    }, 5000);
+
+    $("#refresh-maestro").on("click", async function() {
+      try {
+        await refreshStatus(true);
+      } catch (error) {
+        showNotification(error.message, "is-danger", 6000);
+      }
+    });
+
+    $("#refresh-networks").on("click", async function() {
+      if (!wifiSetupAvailable) {
+        showNotification("O assistente de Wi-Fi nao esta disponivel neste equipamento.", "is-warning", 5000);
+        return;
+      }
+      try {
+        await refreshNetworks(true);
+        showNotification("Lista de redes atualizada.", "is-success");
+      } catch (error) {
+        showNotification(error.message, "is-danger", 6000);
+      }
+    });
+
+    $("#wifi-connect-form").on("submit", async function(event) {
+      event.preventDefault();
+      const ssid = $("#ssid").val().trim();
+      const password = $("#password").val();
+
+      if (!ssid) {
+        showNotification("Escolha ou digite o nome da rede Wi-Fi.", "is-warning");
+        return;
+      }
+
+      await submitWifiConnection(ssid, password);
+    });
+
+    $("#toggle-password").on("click", function() {
+      const input = $("#password");
+      const hidden = input.attr("type") === "password";
+      input.attr("type", hidden ? "text" : "password");
+      $(this).text(hidden ? "Ocultar senha" : "Mostrar senha");
+    });
+
+    $("#disconnect-button").on("click", async function() {
+      if (!wifiSetupAvailable) {
+        showNotification("O assistente de Wi-Fi nao esta disponivel neste equipamento.", "is-warning", 5000);
+        return;
+      }
+      $("#disconnect-button").addClass("is-loading").prop("disabled", true);
+      try {
+        const result = await fetchJson(wifiDisconnectUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        showNotification(result.message || "Wi-Fi desconectado.", "is-success", 7000);
+        $("#ssid").val("");
+        $("#password").val("");
+        await refreshStatus();
+        await refreshNetworks(true);
+      } catch (error) {
+        showNotification(error.message, "is-danger", 7000);
+      } finally {
+        $("#disconnect-button").removeClass("is-loading").prop("disabled", false);
+      }
+    });
+
+    $(window).on("beforeunload", function() {
+      if (statusTimer) {
+        clearInterval(statusTimer);
+      }
+    });
+  });
+</script>
+{% endblock %}
+
+{% block header %}
+<div class="maestro-hero">
+  <div>
+    <p class="maestro-kicker">Maestro de Rede</p>
+    <h1 class="maestro-title">Painel local do operador</h1>
+    <p class="maestro-subtitle">
+      Este painel fica acessivel pelo Dell usando o cabo como canal de controle. Aqui voce acompanha o cabo, o Wi-Fi do Raspberry, a internet e o caminho de operacao do karaoke.
+    </p>
+  </div>
+  <div class="maestro-hero-actions">
+    <button id="refresh-maestro" class="button is-primary is-rounded is-light">Atualizar agora</button>
+    <a class="button is-light is-rounded" href="{{ url_for('info.info') }}">Voltar</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="maestro-layout">
+  <section class="maestro-panel">
+    <div class="maestro-panel-header">
+      <div>
+        <p class="maestro-panel-eyebrow">Diagnostico ao vivo</p>
+        <h3>Estado geral da rede</h3>
+      </div>
+      <span class="tag is-dark is-medium">Atualizado <strong id="last-update" class="maestro-tag-strong">--:--:--</strong></span>
+    </div>
+
+    <div class="maestro-card-grid">
+      <div id="control-channel-card" class="maestro-status-card is-warning">
+        <span class="maestro-card-label">Canal de controle</span>
+        <strong class="maestro-card-value">Carregando...</strong>
+        <p class="maestro-card-helper">Aguardando diagnostico.</p>
+      </div>
+      <div id="wifi-status-card" class="maestro-status-card is-warning">
+        <span class="maestro-card-label">Wi-Fi do Raspberry</span>
+        <strong class="maestro-card-value">Carregando...</strong>
+        <p class="maestro-card-helper">Aguardando diagnostico.</p>
+      </div>
+      <div id="internet-status-card" class="maestro-status-card is-warning">
+        <span class="maestro-card-label">Internet</span>
+        <strong class="maestro-card-value">Carregando...</strong>
+        <p class="maestro-card-helper">Aguardando diagnostico.</p>
+      </div>
+    </div>
+
+    <div class="maestro-detail-grid">
+      <div class="maestro-detail-box">
+        <div class="maestro-detail-header">
+          <h4>Canal por cabo</h4>
+          <span class="tag is-info is-light">Ponto a ponto</span>
+        </div>
+        <div id="control-channel-detail" class="maestro-mini-list">
+          <div class="maestro-empty">Carregando status do cabo...</div>
+        </div>
+      </div>
+
+      <div class="maestro-detail-box">
+        <div class="maestro-detail-header">
+          <h4>Atalhos atuais</h4>
+          <span class="tag is-info is-light">Acesso do Dell</span>
+        </div>
+        <div id="maestro-access-list" class="maestro-mini-list">
+          <div class="maestro-empty">Carregando links do painel...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="maestro-help-box">
+      <strong>Como usar:</strong> deixe este painel aberto no Dell. Em cada troca de local, primeiro confira se o canal por cabo esta pronto, depois conecte o Raspberry ao Wi-Fi do lugar e acompanhe se a internet apareceu.
+    </div>
+  </section>
+
+  <div class="maestro-columns">
+    <section class="maestro-panel">
+      <div class="maestro-panel-header">
+        <div>
+          <p class="maestro-panel-eyebrow">Passo 1</p>
+          <h3>Redes encontradas</h3>
+        </div>
+        <button id="refresh-networks" class="button is-primary is-light is-rounded">Atualizar lista</button>
+      </div>
+
+      <div id="wifi-network-list" class="maestro-network-list">
+        <div class="maestro-empty">Procurando redes Wi-Fi...</div>
+      </div>
+    </section>
+
+    <section class="maestro-panel">
+      <div class="maestro-panel-header">
+        <div>
+          <p class="maestro-panel-eyebrow">Passo 2</p>
+          <h3>Comandar o Wi-Fi do Raspberry</h3>
+        </div>
+        <button id="disconnect-button" type="button" class="button is-danger is-light is-small is-hidden">Desconectar Wi-Fi</button>
+      </div>
+
+      <form id="wifi-connect-form" class="maestro-form">
+        <input type="text" name="fake-username" autocomplete="username" class="is-hidden" tabindex="-1" aria-hidden="true">
+        <input type="password" name="fake-password" autocomplete="current-password" class="is-hidden" tabindex="-1" aria-hidden="true">
+
+        <div class="field">
+          <label class="label" for="ssid">Nome da rede (SSID)</label>
+          <div class="control">
+            <input id="ssid" name="ssid" class="input is-medium" type="text" placeholder="Ex: WiFi do salao" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <p class="help">Clique numa rede da lista ou digite manualmente.</p>
+        </div>
+
+        <div class="field">
+          <label class="label" for="password">Senha</label>
+          <div class="control">
+            <input id="password" name="wifi-password" class="input is-medium" type="password" placeholder="Digite a senha do Wi-Fi" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <div class="maestro-inline-actions">
+            <button id="toggle-password" type="button" class="button is-small is-dark is-outlined">Mostrar senha</button>
+            <span class="help mb-0">Se a rede for aberta, deixe em branco. O cabo continua sendo o canal de controle.</span>
+          </div>
+        </div>
+
+        <button id="connect-button" type="submit" class="button is-primary is-medium is-fullwidth is-rounded">
+          Conectar agora
+        </button>
+      </form>
+    </section>
+  </div>
+</div>
+
+<style>
+  .maestro-layout {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .maestro-hero {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .maestro-hero-actions {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .maestro-kicker {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #8ab4ff;
+    font-size: 0.8rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .maestro-title {
+    font-size: 2rem;
+    line-height: 1.1;
+    margin-bottom: 0.5rem;
+  }
+
+  .maestro-subtitle {
+    max-width: 880px;
+    color: #bac4d6;
+    margin: 0;
+  }
+
+  .maestro-columns {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 1rem;
+  }
+
+  .maestro-panel {
+    background: linear-gradient(180deg, rgba(25, 31, 42, 0.95), rgba(14, 18, 25, 0.98));
+    border: 1px solid rgba(138, 180, 255, 0.12);
+    border-radius: 22px;
+    padding: 1.2rem;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+  }
+
+  .maestro-panel-header,
+  .maestro-detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .maestro-panel-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    color: #88c4ff;
+    margin-bottom: 0.25rem;
+  }
+
+  .maestro-panel h3,
+  .maestro-detail-header h4 {
+    margin: 0;
+  }
+
+  .maestro-tag-strong {
+    margin-left: 0.35rem;
+  }
+
+  .maestro-card-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.9rem;
+  }
+
+  .maestro-status-card {
+    border-radius: 18px;
+    padding: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .maestro-status-card.is-success {
+    border-color: rgba(68, 214, 156, 0.32);
+    background: rgba(68, 214, 156, 0.08);
+  }
+
+  .maestro-status-card.is-warning {
+    border-color: rgba(255, 193, 7, 0.2);
+    background: rgba(255, 193, 7, 0.07);
+  }
+
+  .maestro-card-label {
+    display: block;
+    color: #92a0b8;
+    font-size: 0.82rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .maestro-card-value {
+    display: block;
+    font-size: 1.15rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .maestro-card-helper {
+    color: #c8d2e3;
+    font-size: 0.9rem;
+    margin: 0;
+  }
+
+  .maestro-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.9rem;
+    margin-top: 1rem;
+  }
+
+  .maestro-detail-box {
+    border-radius: 18px;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .maestro-mini-list {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .maestro-mini-row {
+    display: grid;
+    gap: 0.18rem;
+    font-size: 0.92rem;
+    color: #c8d2e3;
+    word-break: break-word;
+  }
+
+  .maestro-mini-row strong {
+    color: #fff;
+  }
+
+  .maestro-empty {
+    color: #92a0b8;
+    font-size: 0.95rem;
+  }
+
+  .maestro-help-box {
+    margin-top: 1rem;
+    border-radius: 16px;
+    padding: 0.9rem 1rem;
+    background: rgba(30, 144, 255, 0.08);
+  }
+
+  .maestro-network-list {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .maestro-network-card {
+    width: 100%;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.025);
+    color: inherit;
+    border-radius: 18px;
+    padding: 0.95rem 1rem;
+    transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+  }
+
+  .maestro-network-card:hover,
+  .maestro-network-card.is-selected {
+    border-color: rgba(138, 180, 255, 0.4);
+    background: rgba(138, 180, 255, 0.08);
+    transform: translateY(-1px);
+  }
+
+  .maestro-network-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+  }
+
+  .maestro-network-meta {
+    display: flex;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    font-size: 0.9rem;
+    color: #c8d2e3;
+  }
+
+  .maestro-form {
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .maestro-inline-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.55rem;
+  }
+
+  @media (max-width: 1080px) {
+    .maestro-card-grid,
+    .maestro-detail-grid,
+    .maestro-columns {
+      grid-template-columns: 1fr;
+    }
+
+    .maestro-hero {
+      flex-direction: column;
+    }
+  }
+</style>
+{% endblock %}

@@ -44,6 +44,7 @@ from pikaraoke.routes.home import home_bp
 from pikaraoke.routes.images import images_bp
 from pikaraoke.routes.info import info_bp
 from pikaraoke.routes.metadata_api import metadata_bp
+from pikaraoke.routes.network_maestro import network_maestro_bp
 from pikaraoke.routes.now_playing import nowplaying_bp
 from pikaraoke.routes.preferences import preferences_bp
 from pikaraoke.routes.queue import queue_bp
@@ -51,6 +52,11 @@ from pikaraoke.routes.search import search_bp
 from pikaraoke.routes.socket_events import setup_socket_events
 from pikaraoke.routes.splash import splash_bp
 from pikaraoke.routes.stream import stream_bp
+
+try:
+    from pikaraoke.routes.wifi_setup import wifi_setup_bp
+except ModuleNotFoundError:
+    wifi_setup_bp = None
 
 _ = flask_babel.gettext
 
@@ -101,9 +107,13 @@ _api_blueprints = [
 _internal_blueprints = [
     home_bp,
     info_bp,
+    network_maestro_bp,
     splash_bp,
     batch_song_renamer_bp,
 ]
+
+if wifi_setup_bp is not None:
+    _internal_blueprints.append(wifi_setup_bp)
 
 for bp in _api_blueprints:
     api.register_blueprint(bp)
