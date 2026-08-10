@@ -15,7 +15,7 @@ class DellWifiSyncError(RuntimeError):
 _DEFAULT_DELL_HOST = os.environ.get("NETWORK_MAESTRO_DELL_HOST", "10.10.10.1").strip()
 _DEFAULT_DELL_USER = os.environ.get("NETWORK_MAESTRO_DELL_USER", "pi").strip()
 _DEFAULT_DELL_SSH_PORT = os.environ.get("NETWORK_MAESTRO_DELL_SSH_PORT", "22").strip() or "22"
-_SYNC_DELL_ENABLED = os.environ.get("NETWORK_MAESTRO_SYNC_DELL", "1").strip().lower() not in {"0", "false", "no", "off"}
+_SYNC_DELL_ENABLED = os.environ.get("NETWORK_MAESTRO_SYNC_DELL", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _split_nmcli_line(line: str) -> list[str]:

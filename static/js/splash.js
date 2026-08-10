@@ -7,9 +7,9 @@ let showMenu = false;
 let menuButtonVisible = false;
 let autoplayConfirmed = false;
 let volume = 0.85;
-const playbackStartTimeout = 20000;
+const playbackStartTimeout = 90000;
 const bgMediaResumeDelay = 2000;
-const prematureEndThresholdSeconds = 3;
+const prematureEndThresholdSeconds = 60;
 const maxPlaybackRecoveryAttempts = 2;
 let isScoreShown = false;
 const hasBgVideo = PikaraokeConfig.hasBgVideo;
@@ -109,9 +109,9 @@ const hideVideo = () => {
 const getPlaybackTelemetry = (video) => ({
   reason: null,
   position: Number.isFinite(video.currentTime) ? video.currentTime : null,
-  duration: Number.isFinite(video.duration)
-    ? video.duration
-    : (Number.isFinite(nowPlaying.now_playing_duration) ? nowPlaying.now_playing_duration : null),
+  duration: Number.isFinite(nowPlaying.now_playing_duration)
+    ? nowPlaying.now_playing_duration
+    : (Number.isFinite(video.duration) ? video.duration : null),
   readyState: video.readyState,
   networkState: video.networkState,
   error: video.error ? (video.error.message || `media-error-${video.error.code}`) : null,
@@ -119,9 +119,9 @@ const getPlaybackTelemetry = (video) => ({
 });
 
 const isPrematureEnd = (video) => {
-  const duration = Number.isFinite(video.duration)
-    ? video.duration
-    : (Number.isFinite(nowPlaying.now_playing_duration) ? nowPlaying.now_playing_duration : null);
+  const duration = Number.isFinite(nowPlaying.now_playing_duration)
+    ? nowPlaying.now_playing_duration
+    : (Number.isFinite(video.duration) ? video.duration : null);
   const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
   return duration !== null && position < (duration - prematureEndThresholdSeconds);
 };

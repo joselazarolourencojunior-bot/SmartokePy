@@ -18,10 +18,10 @@ _ETHERNET_PREFIXES = ("eth", "en", "eno", "enp", "enx")
 _WIFI_PREFIXES = ("wlan", "wl", "wifi", "wi-fi")
 _INTERNET_CHECK_TARGETS = (("1.1.1.1", 53), ("8.8.8.8", 53))
 _NGROK_API_URL = "http://127.0.0.1:4040/api/tunnels"
-_DEFAULT_RASPBERRY_HOST = os.environ.get("NETWORK_MAESTRO_RPI_HOST", "10.10.10.2")
+_DEFAULT_OPERATOR_HOST = os.environ.get("NETWORK_MAESTRO_OPERATOR_HOST", "192.168.15.9")
 _DEFAULT_MAESTRO_PORT = int(os.environ.get("NETWORK_MAESTRO_PORT", "5560"))
 _DEFAULT_KARAOKE_PORT = int(os.environ.get("NETWORK_MAESTRO_KARAOKE_PORT", "5555"))
-_DEFAULT_PORTAL_PORT = int(os.environ.get("NETWORK_MAESTRO_PORTAL_PORT", "8088"))
+_DEFAULT_PORTAL_PORT = int(os.environ.get("NETWORK_MAESTRO_PORTAL_PORT", "3001"))
 
 
 def _clean_text(value: object) -> str:
@@ -97,7 +97,7 @@ def _pick_primary_interface(interfaces: list[dict[str, object]]) -> dict[str, ob
     return interfaces[0] if interfaces else None
 
 
-def _check_internet_reachability(timeout_seconds: float = 1.5) -> bool:
+def _check_internet_reachability(timeout_seconds: float = 0.35) -> bool:
     """Probe raw TCP connectivity without depending on DNS."""
     for host, port in _INTERNET_CHECK_TARGETS:
         try:
@@ -116,7 +116,7 @@ def _join_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}{path if path.startswith('/') else f'/{path}'}"
 
 
-def _get_ngrok_status(timeout_seconds: float = 2.0) -> dict[str, object]:
+def _get_ngrok_status(timeout_seconds: float = 0.35) -> dict[str, object]:
     """Return the current public tunnel status from the local ngrok API."""
     try:
         with urlopen(_NGROK_API_URL, timeout=timeout_seconds) as response:
@@ -178,9 +178,9 @@ def _build_operating_mode(
             "code": "clientes_via_internet",
             "title": "Clientes via internet",
             "ready": True,
-            "operator_channel": "Cabo ponto a ponto",
+            "operator_channel": "Wi-Fi do Dell",
             "client_channel": "Link publico / ngrok",
-            "message": "O operador continua controlando tudo localmente pelo cabo, e os clientes devem entrar pelos links publicos.",
+            "message": "O operador continua controlando tudo localmente pelo Dell, e os clientes devem entrar pelos links publicos.",
             "next_step": "Conferir se o link publico aberto no ngrok e o esperado para portal, mesas e karaoke.",
         }
 
@@ -189,9 +189,9 @@ def _build_operating_mode(
             "code": "internet_sem_tunel",
             "title": "Internet sem link publico",
             "ready": False,
-            "operator_channel": "Cabo ponto a ponto",
+            "operator_channel": "Wi-Fi do Dell",
             "client_channel": "Aguardando ngrok",
-            "message": "Ha internet, mas o tunel publico ainda nao esta pronto. O operador segue com controle local pelo cabo.",
+            "message": "Ha internet, mas o tunel publico ainda nao esta pronto. O operador segue com controle local pelo Wi-Fi do Dell.",
             "next_step": "Verificar o servico do ngrok antes de liberar o acesso para clientes.",
         }
 
@@ -200,9 +200,9 @@ def _build_operating_mode(
             "code": "somente_operador_local",
             "title": "Somente operador local",
             "ready": True,
-            "operator_channel": "Cabo ponto a ponto",
+            "operator_channel": "Wi-Fi do Dell",
             "client_channel": "Indisponivel agora",
-            "message": "O Raspberry esta conectado ao Wi-Fi, mas nao ha caminho publico confirmado. O operador ainda consegue reorganizar tudo pelo cabo.",
+            "message": "O Dell esta conectado ao Wi-Fi, mas nao ha caminho publico confirmado. O operador ainda consegue reorganizar tudo localmente.",
             "next_step": "Testar internet do local ou hotspot para permitir o uso do ngrok.",
         }
 
@@ -211,9 +211,9 @@ def _build_operating_mode(
             "code": "controle_local_emergencia",
             "title": "Controle local de emergencia",
             "ready": True,
-            "operator_channel": "Cabo ponto a ponto",
+            "operator_channel": "Wi-Fi do Dell",
             "client_channel": "Indisponivel agora",
-            "message": "Sem Wi-Fi util no momento. O cabo segue como linha de vida para reconectar o Raspberry.",
+            "message": "Sem Wi-Fi util no momento. A rede local do Dell segue como linha de vida para reconectar.",
             "next_step": "Usar o maestro para entrar numa rede com internet.",
         }
 
@@ -223,24 +223,24 @@ def _build_operating_mode(
         "ready": False,
         "operator_channel": "A confirmar",
         "client_channel": "Indisponivel",
-        "message": "Nem o cabo nem o caminho publico estao prontos o suficiente agora.",
-        "next_step": "Checar o link do cabo e religar o canal de controle antes de seguir.",
+        "message": "Nem o Wi-Fi do Dell nem o caminho publico estao prontos o suficiente agora.",
+        "next_step": "Checar o Wi-Fi do Dell e religar o canal de controle antes de seguir.",
     }
 
 
 def _build_operational_links(ngrok_status: dict[str, object]) -> dict[str, object]:
     """Build the main local and public URLs used in operation."""
-    raspberry_host = _DEFAULT_RASPBERRY_HOST
-    maestro_base = f"http://{raspberry_host}:{_DEFAULT_MAESTRO_PORT}"
-    karaoke_base = f"http://{raspberry_host}:{_DEFAULT_KARAOKE_PORT}"
-    portal_base = f"http://{raspberry_host}:{_DEFAULT_PORTAL_PORT}"
+    operator_host = _DEFAULT_OPERATOR_HOST
+    maestro_base = f"http://{operator_host}:{_DEFAULT_MAESTRO_PORT}"
+    karaoke_base = f"http://{operator_host}:{_DEFAULT_KARAOKE_PORT}"
+    portal_base = f"http://{operator_host}:{_DEFAULT_PORTAL_PORT}"
     public_base = _clean_text(ngrok_status.get("public_url", "")).rstrip("/")
 
     local_links = [
         {
             "label": "Maestro de rede",
             "url": maestro_base,
-            "description": "Painel separado do operador pelo cabo.",
+            "description": "Painel do operador no Dell (Wi-Fi local).",
         },
         {
             "label": "Assistente Wi-Fi",
@@ -250,7 +250,7 @@ def _build_operational_links(ngrok_status: dict[str, object]) -> dict[str, objec
         {
             "label": "Karaoke local",
             "url": karaoke_base,
-            "description": "Interface principal do SmartokePy no Raspberry.",
+            "description": "Interface principal do SmartokePy no Dell.",
         },
         {
             "label": "Splash local",
@@ -265,7 +265,7 @@ def _build_operational_links(ngrok_status: dict[str, object]) -> dict[str, objec
         {
             "label": "Portal local",
             "url": portal_base,
-            "description": "Portal administrativo direto no Raspberry.",
+            "description": "Portal administrativo do Dell.",
         },
     ]
 
@@ -324,6 +324,8 @@ def _links_to_contract_map(links: list[dict[str, str]]) -> dict[str, str]:
 def get_network_maestro_status() -> dict[str, object]:
     """Return a compact live network snapshot for the operator panel."""
     ethernet_interfaces = _get_interfaces_by_kind("ethernet")
+    wifi_interfaces = _get_interfaces_by_kind("wifi")
+    primary_wifi = _pick_primary_interface(wifi_interfaces)
     primary_ethernet = _pick_primary_interface(ethernet_interfaces)
 
     try:
@@ -349,12 +351,13 @@ def get_network_maestro_status() -> dict[str, object]:
         and _clean_text(wifi_status.get("ssid", "")) == _clean_text(dell_wifi_status.get("wifi_ssid", ""))
     )
 
+    control_ready = bool(wifi_status.get("connected") or (primary_wifi and primary_wifi.get("is_up")))
     internet_available = _check_internet_reachability()
     ngrok_status = _get_ngrok_status()
     public_ready = bool(internet_available and ngrok_status["online"])
     operational_links = _build_operational_links(ngrok_status)
     operating_mode = _build_operating_mode(
-        bool(primary_ethernet and primary_ethernet.get("is_up")),
+        control_ready,
         wifi_status,
         internet_available,
         ngrok_status,
@@ -363,27 +366,30 @@ def get_network_maestro_status() -> dict[str, object]:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "control_channel": {
-            "mode": "ponto-a-ponto",
-            "ready": bool(primary_ethernet and primary_ethernet.get("is_up")),
+            "mode": "wifi-local",
+            "ready": control_ready,
             "message": (
-                "Canal por cabo pronto para comandar o Raspberry."
-                if primary_ethernet and primary_ethernet.get("is_up")
-                else "Canal por cabo indisponivel ou sem link no momento."
+                "Wi-Fi do Dell pronto para operar."
+                if control_ready
+                else "Wi-Fi do Dell indisponivel ou sem link no momento."
             ),
-            "primary": primary_ethernet,
-            "interfaces": ethernet_interfaces,
+            "primary": primary_wifi,
+            "interfaces": wifi_interfaces,
+            "ethernet": primary_ethernet,
+            "ethernet_interfaces": ethernet_interfaces,
         },
         "wifi": wifi_status,
         "operator_peer": {
             **dell_wifi_status,
             "same_network_as_raspberry": same_wifi_network,
+            "same_network_as_operator": same_wifi_network,
         },
         "internet": {
             "online": internet_available,
             "message": (
                 "Internet detectada para uso do ngrok e servicos online."
                 if internet_available
-                else "Sem internet agora. O controle local pelo cabo continua."
+                else "Sem internet agora. O controle local pelo Wi-Fi do Dell continua."
             ),
         },
         "public_access": {
@@ -410,9 +416,17 @@ def get_network_maestro_contract() -> dict[str, object]:
     ngrok = status.get("ngrok", {})
     operating_mode = status.get("operating_mode", {})
     operational_links = status.get("operational_links", {})
+    operator_peer = status.get("operator_peer") or {}
 
     local_links = _links_to_contract_map(list(operational_links.get("local", [])))
     public_links = _links_to_contract_map(list(operational_links.get("public", [])))
+
+    control_primary = control_channel.get("primary") or {}
+    ethernet_primary = control_channel.get("ethernet") or {}
+    dell_same_network = bool(
+        operator_peer.get("same_network_as_operator")
+        or operator_peer.get("same_network_as_raspberry")
+    )
 
     return {
         "generated_at": _clean_text(status.get("generated_at")),
@@ -425,15 +439,16 @@ def get_network_maestro_contract() -> dict[str, object]:
         },
         "network": {
             "cable_ready": bool(control_channel.get("ready")),
-            "cable_ip": _clean_text((control_channel.get("primary") or {}).get("ipv4", "")),
+            "cable_ip": _clean_text(ethernet_primary.get("ipv4", "")),
+            "wifi_ready": bool(control_channel.get("ready")),
+            "wifi_ip": _clean_text(control_primary.get("ipv4", "")),
             "wifi_connected": bool(wifi.get("connected")),
             "wifi_ssid": _clean_text(wifi.get("ssid", "")),
-            "wifi_ip": _clean_text(wifi.get("ip_address", "")),
-            "dell_reachable": bool((status.get("operator_peer") or {}).get("reachable")),
-            "dell_wifi_connected": bool((status.get("operator_peer") or {}).get("wifi_connected")),
-            "dell_wifi_ssid": _clean_text((status.get("operator_peer") or {}).get("wifi_ssid", "")),
-            "dell_wifi_ip": _clean_text((status.get("operator_peer") or {}).get("wifi_ip", "")),
-            "dell_same_network": bool((status.get("operator_peer") or {}).get("same_network_as_raspberry")),
+            "dell_reachable": bool(operator_peer.get("reachable")),
+            "dell_wifi_connected": bool(operator_peer.get("wifi_connected")),
+            "dell_wifi_ssid": _clean_text(operator_peer.get("wifi_ssid", "")),
+            "dell_wifi_ip": _clean_text(operator_peer.get("wifi_ip", "")),
+            "dell_same_network": dell_same_network,
             "internet_online": bool(internet.get("online")),
             "ngrok_online": bool(ngrok.get("online")),
             "ngrok_public_url": _clean_text(ngrok.get("public_url", "")),
