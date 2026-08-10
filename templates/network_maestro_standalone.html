@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
+<base href="/maestro/">
   <meta charset="utf-8">
   <title>{% if title %}{{ title }}{% else %}Maestro de Rede{% endif %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -150,6 +151,17 @@
 
     .status-card {
       padding: 16px;
+      min-height: 132px;
+      overflow: hidden;
+      position: relative;
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .status-card > * {
+      max-width: 100%;
+      box-sizing: border-box;
     }
 
     .status-card.success {
@@ -162,24 +174,50 @@
       background: rgba(251, 191, 36, 0.08);
     }
 
+    .status-card.error {
+      border-color: rgba(248, 113, 113, 0.35);
+      background: rgba(248, 113, 113, 0.08);
+    }
+
     .card-label {
       display: block;
       font-size: 13px;
       color: var(--muted);
       margin-bottom: 6px;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .card-value {
       display: block;
       font-size: 20px;
       margin-bottom: 6px;
+      line-height: 1.25;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      max-width: 100%;
     }
 
     .card-helper {
       margin: 0;
+      padding: 0;
       color: #c6d2e7;
       font-size: 14px;
       line-height: 1.45;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .card-helper a {
+      color: #a5c8ff;
+      text-decoration: underline;
+      text-decoration-color: rgba(165, 200, 255, 0.35);
+      text-underline-offset: 2px;
     }
 
     .detail-box {
@@ -417,7 +455,7 @@
           <p class="card-helper">Aguardando diagnostico.</p>
         </div>
         <div id="partnerCard" class="status-card warning">
-          <span class="card-label">Operador remoto</span>
+          <span class="card-label">Servicos Dell</span>
           <strong class="card-value">Carregando...</strong>
           <p class="card-helper">Aguardando diagnostico.</p>
         </div>
@@ -522,6 +560,10 @@
     }
 
     async function api(url, options = {}) {
+      if (typeof url === "string") {
+        if (url.startsWith("/api")) url = "/maestro" + url;
+        else if (url.startsWith("/wifi/")) url = "/maestro" + url;
+      }
       const response = await fetch(url, options);
       const data = await response.json();
       if (!response.ok) {
@@ -541,13 +583,39 @@
       }, timeout);
     }
 
+    function _looksLikeHtml(s) {
+      return typeof s === "string" && /<\/?[a-z][\s\S]*>/i.test(s);
+    }
+
+    function _pipeLinksToHtml(textOrHtml) {
+      if (!textOrHtml) return "";
+      if (_looksLikeHtml(textOrHtml)) return textOrHtml;
+      // text: separa URLs por " | " ou "\n" ou " / " => quebra em <br>
+      let parts = String(textOrHtml).split(/\s*(?:\||\n)\s*/).map(s => s.trim()).filter(Boolean);
+      // transforma URLs starting with http(s) em links clicaveis
+      parts = parts.map(part => {
+        if (/^https?:\/\//i.test(part)) {
+          return `<a href="${part}" target="_blank" rel="noreferrer">${part}</a>`;
+        }
+        return part;
+      });
+      return parts.join("<br>");
+    }
+
     function setStatusCard(elementId, active, label, value, helper) {
       const node = document.getElementById(elementId);
-      node.classList.remove("success", "warning");
+      if (!node) return;
+      node.classList.remove("success", "warning", "error");
       node.classList.add(active ? "success" : "warning");
-      node.querySelector(".card-label").textContent = label;
-      node.querySelector(".card-value").textContent = value;
-      node.querySelector(".card-helper").textContent = helper;
+      node.querySelector(".card-label").textContent = label || "";
+      node.querySelector(".card-value").textContent = value || "";
+      const helperNode = node.querySelector(".card-helper");
+      const helperOut = _pipeLinksToHtml(helper || "");
+      if (_looksLikeHtml(helper) || /<br>|<a\s/i.test(helperOut)) {
+        helperNode.innerHTML = helperOut;
+      } else {
+        helperNode.textContent = helperOut || "";
+      }
     }
 
     function renderControlChannel(control) {
@@ -592,24 +660,23 @@
 
     function renderPartnerStatus(status) {
       currentPartnerStatus = status;
-      const sameNetwork = Boolean(status.same_network_as_raspberry);
+      const sameNetwork = Boolean(status.same_network_as_operator || status.same_network_as_raspberry);
       const connected = Boolean(status.wifi_connected);
-      const value = connected ? (status.wifi_ssid || "Conectado") : (status.reachable ? "Sem rede" : "Sem resposta");
+      const reachable = Boolean(status.reachable);
+      const value = connected ? (status.wifi_ssid || "Servicos ativos") : (reachable ? "Aguardando Wi-Fi" : "Sem controle");
       const helper = [
-        status.reachable ? "Operador disponivel" : "Operador sem resposta",
+        reachable ? "Todos servicos Dell ativos" : "Servicos Dell sem resposta",
         status.host ? `Host ${status.host}` : "",
-        status.wifi_ip ? `IP ${status.wifi_ip}` : "",
-        connected ? status.wifi_ssid || "Wi-Fi conectado" : "Sem Wi-Fi",
-        sameNetwork ? "Mesma rede do Dell" : "",
-        !sameNetwork && connected ? "Rede diferente do Dell" : "",
+        status.wifi_ip ? `IP Wi-Fi ${status.wifi_ip}` : "",
+        connected ? status.wifi_ssid || "Wi-Fi conectado" : "Sem Wi-Fi conectado ainda",
       ].filter(Boolean).join(" | ");
 
       setStatusCard(
         "partnerCard",
-        Boolean(status.reachable && connected),
-        "Operador remoto",
+        reachable,
+        "Servicos Dell",
         value,
-        helper || status.message || "Sem leitura remota do operador."
+        helper || status.message || "Aguardando leitura dos servicos locais."
       );
     }
 
@@ -618,23 +685,27 @@
         "internetCard",
         Boolean(internet.online),
         "Internet",
-        internet.online ? "Disponivel" : "Indisponivel",
-        internet.online ? "Online" : "Offline"
+        internet.online ? "Online" : "Offline",
+        internet.online ? "Internet disponivel para Cloudflare e servicos online." : "Sem internet agora. Wi-Fi do Dell continua controlando tudo."
       );
     }
 
-    function renderPublicStatus(publicAccess, ngrok) {
-      const publicValue = publicAccess.ready ? "Via internet" : "Operador local";
-      const helper = [
-        ngrok.online && ngrok.public_url ? ngrok.public_url : "",
-      ].filter(Boolean).join(" | ");
+    function renderPublicStatus(publicAccess, publicTunnels) {
+      const pt = publicTunnels || {};
+      const cf = (typeof pt.cloudflare === "object" && pt.cloudflare) || {};
+      const publicValue = publicAccess.ready ? "Via internet (Cloudflare)" : "Apenas local por Wi-Fi";
+      const links = [];
+      if (cf.portal) links.push(cf.portal);
+      if (cf.karaoke) links.push(cf.karaoke);
+      if (!links.length && pt.public_url) links.push(pt.public_url);
+      const helper = links.filter(Boolean).join(" | ");
 
       setStatusCard(
         "publicCard",
         Boolean(publicAccess.ready),
         "Acesso dos clientes",
         publicValue,
-        helper || "Sem caminho publico confirmado agora."
+        helper || "Sem link publico confirmado agora."
       );
     }
 
@@ -648,10 +719,12 @@
       document.getElementById("modeNextStep").textContent = mode.code || "--";
     }
 
-    function renderOperationalLinks(access, ngrok, links) {
+    function renderOperationalLinks(access, publicTunnels, links) {
       const detail = document.getElementById("serviceDetails");
       const localLinks = links.local || [];
       const publicLinks = links.public || [];
+      const pt = publicTunnels || {};
+      const cf = (typeof pt.cloudflare === "object" && pt.cloudflare) || {};
       let html = `<div class="compact-links">`;
 
       html += `
@@ -663,13 +736,20 @@
         </div>
       `;
 
-      if (ngrok && ngrok.public_url) {
+      if (cf && (cf.portal || cf.karaoke || cf.public_url)) {
         html += `
-          <div class="section-divider">Ngrok</div>
+          <div class="section-divider">Tunel Cloudflare</div>
+          ${cf.portal ? `<div class="compact-link-item"><strong>Portal</strong><a href="${cf.portal}" target="_blank" rel="noreferrer">${cf.portal}</a></div>` : ""}
+          ${cf.karaoke ? `<div class="compact-link-item"><strong>Karaoke</strong><a href="${cf.karaoke}" target="_blank" rel="noreferrer">${cf.karaoke}</a></div>` : ""}
+          ${cf.public_url && cf.public_url !== cf.portal && cf.public_url !== cf.karaoke ? `<div class="compact-link-item"><strong>Primario</strong><a href="${cf.public_url}" target="_blank" rel="noreferrer">${cf.public_url}</a></div>` : ""}
+        `;
+      } else if (pt && pt.ngrok && pt.ngrok.public_url) {
+        html += `
+          <div class="section-divider">Tunel Ngrok (fallback)</div>
           <div class="compact-link-item">
             <strong>Publico</strong>
-            <a href="${ngrok.public_url}" target="_blank" rel="noreferrer">${ngrok.public_url}</a>
-            <span>${ngrok.target || "--"}</span>
+            <a href="${pt.ngrok.public_url}" target="_blank" rel="noreferrer">${pt.ngrok.public_url}</a>
+            <span>${pt.ngrok.target || "--"}</span>
           </div>
         `;
       }
@@ -685,18 +765,20 @@
       }
 
       if (publicLinks.length) {
-        html += `<div class="section-divider">Publico</div>`;
+        html += `<div class="section-divider">Links publicos</div>`;
         html += publicLinks.map((item) => `
           <div class="compact-link-item">
             <strong>${item.label}</strong>
             <a href="${item.url}" target="_blank" rel="noreferrer">${item.url}</a>
+            ${item.description ? `<span>${item.description}</span>` : ""}
           </div>
         `).join("");
       } else {
         html += `
-          <div class="section-divider">Publico</div>
+          <div class="section-divider">Links publicos</div>
           <div class="compact-link-item">
-            <strong>Indisponivel</strong>
+            <strong>Aguardando Cloudflare</strong>
+            <span>Os links publicos aparecem assim que o tunel responder.</span>
           </div>
         `;
       }
@@ -732,7 +814,7 @@
           badges.push('<span class="pill">Em uso nos dois</span>');
         } else {
           if (dellUsing) badges.push('<span class="pill">Em uso no Dell</span>');
-          if (partnerUsing) badges.push('<span class="pill">Em uso no operador remoto</span>');
+          if (partnerUsing && !dellUsing) badges.push('<span class="pill">Servicos Dell usando</span>');
         }
         card.innerHTML = `
           <div class="network-title">${network.ssid}</div>
@@ -758,8 +840,8 @@
 
           if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
             const partnerNote = currentPartnerStatus?.reachable
-              ? " O operador remoto tambem vai tentar acompanhar essa troca."
-              : " O operador remoto nao esta sendo lido agora, entao confirme depois se ele acompanhou.";
+              ? " Os servicos Dell vao seguir usando a nova conexao."
+              : " Confirme depois se os servicos Dell restabeleceram apos a troca.";
             showNotification(`Ao conectar em ${network.ssid}, o Dell vai trocar automaticamente de rede.${partnerNote}`, "warning", 5200);
           }
 
@@ -771,14 +853,14 @@
     }
 
     async function refreshStatus(showToast = false) {
-      const status = await api("/api/status");
+      const status = await api("/maestro/api/status");
       renderControlChannel(status.control_channel || {});
       renderWifiStatus(status.wifi || {});
       renderPartnerStatus(status.operator_peer || {});
       renderInternetStatus(status.internet || {});
-      renderPublicStatus(status.public_access || {}, status.ngrok || {});
+      renderPublicStatus(status.public_access || {}, status.public_tunnels || status.ngrok || {});
       renderOperatingMode(status.operating_mode || {});
-      renderOperationalLinks(status.access || {}, status.ngrok || {}, status.operational_links || {});
+      renderOperationalLinks(status.access || {}, status.public_tunnels || status.ngrok || {}, status.operational_links || {});
       document.getElementById("lastUpdate").textContent = new Date().toLocaleTimeString("pt-BR");
       if (showToast) {
         showNotification("Diagnostico do maestro atualizado.");
@@ -789,7 +871,7 @@
       const button = document.getElementById("refreshNetworksButton");
       button.disabled = true;
       try {
-        const data = await api("/api/wifi/networks?rescan=1");
+        const data = await api("/maestro/api/wifi/networks?rescan=1");
         renderNetworks(data.networks || []);
         if (showToast) {
           showNotification("Lista de redes atualizada.");
@@ -803,7 +885,7 @@
       const button = document.getElementById("connectButton");
       button.disabled = true;
       try {
-        const result = await api("/api/wifi/connect", {
+        const result = await api("/maestro/api/wifi/connect", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ssid, password })
@@ -812,7 +894,7 @@
         window.setTimeout(async () => {
           try {
             await refreshStatus();
-            const data = await api("/api/wifi/networks?rescan=0");
+            const data = await api("/maestro/api/wifi/networks?rescan=0");
             renderNetworks(data.networks || []);
           } catch (error) {
             showNotification(error.message, "danger", 6000);
@@ -829,7 +911,7 @@
       const button = document.getElementById("disconnectButton");
       button.disabled = true;
       try {
-        const result = await api("/api/wifi/disconnect", {
+        const result = await api("/maestro/api/wifi/disconnect", {
           method: "POST",
           headers: { "Content-Type": "application/json" }
         });

@@ -23,6 +23,17 @@ _DEFAULT_MAESTRO_PORT = int(os.environ.get("NETWORK_MAESTRO_PORT", "5560"))
 _DEFAULT_KARAOKE_PORT = int(os.environ.get("NETWORK_MAESTRO_KARAOKE_PORT", "5555"))
 _DEFAULT_PORTAL_PORT = int(os.environ.get("NETWORK_MAESTRO_PORTAL_PORT", "3001"))
 
+_CF_CONFIG_CANDIDATES = (
+    "/etc/cloudflared/config.yml",
+    "/etc/cloudflared/config.yaml",
+    "/opt/Karaoke/cloudflared/config.yml",
+    os.path.expanduser("~/.cloudflared/config.yml"),
+)
+_CF_PUBLIC_HOSTNAMES = (
+    "portal.thermowatch.com.br",
+    "karaoke.thermowatch.com.br",
+)
+
 
 def _clean_text(value: object) -> str:
     """Normalize text values returned by local tools or env vars."""
@@ -163,36 +174,180 @@ def _get_ngrok_status(timeout_seconds: float = 0.35) -> dict[str, object]:
     }
 
 
+def _proc_running(cmd_substring: str) -> bool:
+    """Return True if any running process contains cmd_substring."""
+    try:
+        for proc in psutil.process_iter(attrs=["name", "cmdline"]):
+            try:
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                if cmd_substring in cmdline or cmd_substring in (proc.info.get("name") or ""):
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _http_ok(url: str, timeout_seconds: float = 1.0, only_head: bool = True) -> tuple[bool, int, str]:
+    """Probe a URL and return (ok, status_code, first_bytes_or_error)."""
+    import subprocess as _sp
+    # Uses subprocess curl to avoid issues with ssl certs/network stack inside systemd
+    try:
+        cmd = [
+            "curl", "-sSL", "-m", str(max(1, int(timeout_seconds))),
+            "-o", "/dev/null", "-w", "%{http_code}", url,
+        ]
+        rc = _sp.run(cmd, capture_output=True, text=True, timeout=int(timeout_seconds) + 2)
+        code_raw = (rc.stdout or "").strip()
+        if code_raw.isdigit():
+            code = int(code_raw)
+            return (200 <= code < 500), code, f"HTTP {code}"
+        return False, 0, rc.stderr.strip()[:240] or (f"exit {rc.returncode}")
+    except Exception as e:
+        return False, 0, f"{type(e).__name__}: {e}"[:240]
+
+
+def _get_cloudflare_tunnels_status(timeout_seconds: float = 1.0) -> dict[str, object]:
+    """Detect Cloudflare Tunnel (cloudflared) running, config, and public hostnames reachable."""
+    running = _proc_running("cloudflared")
+    service_active = False
+    config_path = ""
+    for p in _CF_CONFIG_CANDIDATES:
+        try:
+            if os.path.exists(p):
+                config_path = p
+                break
+        except OSError:
+            continue
+
+    # Try to detect active hostnames: check known hostnames via HTTPS
+    hostnames_up: list[dict[str, str]] = []
+    first_public_url = ""
+    total_ok = 0
+    for host in _CF_PUBLIC_HOSTNAMES:
+        url = f"https://{host}/"
+        ok, code, note = _http_ok(url, timeout_seconds=timeout_seconds)
+        if ok:
+            total_ok += 1
+            if not first_public_url and "portal" in host:
+                first_public_url = url
+            hostnames_up.append({"hostname": host, "url": url, "status": str(code)})
+        else:
+            hostnames_up.append({"hostname": host, "url": url, "status": note})
+
+    online = running and total_ok > 0
+    if not first_public_url and hostnames_up:
+        first_public_url = hostnames_up[0]["url"]
+
+    message = (
+        f"Tunel Cloudflare ativo: {total_ok}/{len(_CF_PUBLIC_HOSTNAMES)} dominios respondendo."
+        if online
+        else
+        ("cloudflared rodando, mas hostnames publicos nao responderam ainda."
+         if running
+         else "cloudflared nao esta rodando neste momento.")
+    )
+
+    return {
+        "online": bool(online),
+        "running": bool(running),
+        "service_active": bool(service_active),
+        "config_path": config_path,
+        "public_url": first_public_url,
+        "message": message,
+        "target": "cloudflared-systemd",
+        "hostnames": hostnames_up,
+        "portal": "https://portal.thermowatch.com.br",
+        "karaoke": "https://karaoke.thermowatch.com.br",
+    }
+
+
+def _get_public_tunnels_status(timeout_seconds: float = 1.0) -> dict[str, object]:
+    """Unified public tunnel status (Cloudflare primary; ngrok kept as fallback)."""
+    cf = _get_cloudflare_tunnels_status(timeout_seconds=timeout_seconds)
+    ng = _get_ngrok_status(timeout_seconds=min(0.6, timeout_seconds * 0.6))
+    return {
+        "online": bool(cf.get("online") or ng.get("online")),
+        "provider": "cloudflare" if cf.get("online") else ("ngrok" if ng.get("online") else "nenhum"),
+        "cloudflare": cf,
+        "ngrok": ng,
+        "public_url": _clean_text(cf.get("public_url") or ng.get("public_url") or ""),
+        "message": _clean_text(cf.get("message") if cf.get("online") else (ng.get("message") if ng.get("online") else (cf.get("message") or ng.get("message")))),
+    }
+
+
+def _get_local_peer_status(wifi_status: dict[str, object], dell_same_network: bool) -> dict[str, object]:
+    """Build operator peer status — on this Dell-only installation, the peer IS the Dell itself.
+
+    Old name 'operator_peer' referenced a secondary Raspberry/Operador device that no longer
+    exists. We keep the shape for compatibility with the HTML panel but mark it 'reachable'
+    when Dell Wi-Fi is connected.
+    """
+    dell_connected = bool(wifi_status.get("connected"))
+    dell_ssid = _clean_text(wifi_status.get("ssid", ""))
+    dell_device = _clean_text(wifi_status.get("device", ""))
+    dell_ip = _clean_text(wifi_status.get("ip_address", ""))
+    dell_signal = wifi_status.get("signal")
+    return {
+        "reachable": bool(dell_connected or bool(wifi_status)),
+        "message": (
+            "Este Dell controla tudo agora (nao ha segundo operador remoto)."
+            if dell_connected
+            else "Aguardando Wi-Fi do Dell conectar."
+        ),
+        "wifi_connected": dell_connected,
+        "wifi_ssid": dell_ssid,
+        "wifi_ip": dell_ip,
+        "host": _DEFAULT_OPERATOR_HOST,
+        "device": dell_device,
+        "signal": dell_signal,
+        "same_network_as_raspberry": bool(dell_same_network or dell_connected),
+        "same_network_as_operator": bool(dell_same_network or dell_connected),
+    }
+
+
 def _build_operating_mode(
     control_ready: bool,
     wifi_status: dict[str, object],
     internet_available: bool,
-    ngrok_status: dict[str, object],
+    public_tunnels: dict[str, object],
 ) -> dict[str, object]:
     """Summarize the current operational mode for the operator."""
     wifi_connected = bool(wifi_status.get("connected"))
-    public_ready = bool(internet_available and ngrok_status.get("online"))
+    public_ready = bool(internet_available and public_tunnels.get("online"))
+    provider = str(public_tunnels.get("provider") or "")
 
     if public_ready:
+        prov_label = "Cloudflare" if provider == "cloudflare" else ("Ngrok" if provider == "ngrok" else "Tunel")
         return {
             "code": "clientes_via_internet",
             "title": "Clientes via internet",
             "ready": True,
             "operator_channel": "Wi-Fi do Dell",
-            "client_channel": "Link publico / ngrok",
-            "message": "O operador continua controlando tudo localmente pelo Dell, e os clientes devem entrar pelos links publicos.",
-            "next_step": "Conferir se o link publico aberto no ngrok e o esperado para portal, mesas e karaoke.",
+            "client_channel": f"Link publico / {prov_label}",
+            "message": (
+                "O operador continua controlando tudo localmente pelo Dell, "
+                "e os clientes devem entrar pelos links publicos."
+            ),
+            "next_step": (
+                "Conferir se os links publicos abertos no Cloudflare (portal e karaoke) "
+                "sao os esperados para acesso externo."
+            ),
         }
 
-    if internet_available and not ngrok_status.get("online"):
+    if internet_available and not public_tunnels.get("online"):
         return {
             "code": "internet_sem_tunel",
             "title": "Internet sem link publico",
             "ready": False,
             "operator_channel": "Wi-Fi do Dell",
-            "client_channel": "Aguardando ngrok",
-            "message": "Ha internet, mas o tunel publico ainda nao esta pronto. O operador segue com controle local pelo Wi-Fi do Dell.",
-            "next_step": "Verificar o servico do ngrok antes de liberar o acesso para clientes.",
+            "client_channel": "Aguardando Cloudflare",
+            "message": (
+                "Ha internet, mas o tunel publico (Cloudflare) ainda nao esta pronto. "
+                "O operador segue com controle local pelo Wi-Fi do Dell."
+            ),
+            "next_step": "Verificar o servico cloudflared.service antes de liberar acesso para clientes.",
         }
 
     if control_ready and wifi_connected:
@@ -202,8 +357,11 @@ def _build_operating_mode(
             "ready": True,
             "operator_channel": "Wi-Fi do Dell",
             "client_channel": "Indisponivel agora",
-            "message": "O Dell esta conectado ao Wi-Fi, mas nao ha caminho publico confirmado. O operador ainda consegue reorganizar tudo localmente.",
-            "next_step": "Testar internet do local ou hotspot para permitir o uso do ngrok.",
+            "message": (
+                "O Dell esta conectado ao Wi-Fi, mas nao ha caminho publico confirmado. "
+                "O operador ainda consegue reorganizar tudo localmente."
+            ),
+            "next_step": "Testar internet do local ou hotspot para permitir uso do Cloudflare Tunnel.",
         }
 
     if control_ready:
@@ -228,71 +386,43 @@ def _build_operating_mode(
     }
 
 
-def _build_operational_links(ngrok_status: dict[str, object]) -> dict[str, object]:
-    """Build the main local and public URLs used in operation."""
+def _build_operational_links(public_tunnels: dict[str, object]) -> dict[str, object]:
+    """Build the main local and public URLs used in operation.
+
+    Cloudflare primary: we always publish portal.thermowatch.com.br and karaoke.thermowatch.com.br
+    as the canonical internet entries; ngrok remains a fallback only.
+    """
     operator_host = _DEFAULT_OPERATOR_HOST
     maestro_base = f"http://{operator_host}:{_DEFAULT_MAESTRO_PORT}"
     karaoke_base = f"http://{operator_host}:{_DEFAULT_KARAOKE_PORT}"
     portal_base = f"http://{operator_host}:{_DEFAULT_PORTAL_PORT}"
-    public_base = _clean_text(ngrok_status.get("public_url", "")).rstrip("/")
+
+    cf = public_tunnels.get("cloudflare") if isinstance(public_tunnels.get("cloudflare"), dict) else {}
+    portal_public = _clean_text(cf.get("portal") or "https://portal.thermowatch.com.br")
+    karaoke_public = _clean_text(cf.get("karaoke") or "https://karaoke.thermowatch.com.br")
+    # fallback: unified public_url (ngrok / primary cloudflare)
+    unified_public = _clean_text(public_tunnels.get("public_url") or portal_public)
 
     local_links = [
-        {
-            "label": "Maestro de rede",
-            "url": maestro_base,
-            "description": "Painel do operador no Dell (Wi-Fi local).",
-        },
-        {
-            "label": "Assistente Wi-Fi",
-            "url": _join_url(karaoke_base, "/wifi-setup"),
-            "description": "Tela de apoio do SmartokePy para rede.",
-        },
-        {
-            "label": "Karaoke local",
-            "url": karaoke_base,
-            "description": "Interface principal do SmartokePy no Dell.",
-        },
-        {
-            "label": "Splash local",
-            "url": _join_url(karaoke_base, "/splash"),
-            "description": "Tela de exibicao da TV.",
-        },
-        {
-            "label": "Fila local",
-            "url": _join_url(karaoke_base, "/queue"),
-            "description": "Fila local do karaoke.",
-        },
-        {
-            "label": "Portal local",
-            "url": portal_base,
-            "description": "Portal administrativo do Dell.",
-        },
+        {"label": "Maestro de rede", "url": maestro_base, "description": "Painel do operador no Dell (Wi-Fi local)."},
+        {"label": "Assistente Wi-Fi", "url": _join_url(karaoke_base, "/wifi-setup"), "description": "Tela de apoio do SmartokePy para rede."},
+        {"label": "Karaoke local", "url": karaoke_base, "description": "Interface principal do SmartokePy no Dell."},
+        {"label": "Splash local", "url": _join_url(karaoke_base, "/splash"), "description": "Tela de exibicao da TV."},
+        {"label": "Fila local", "url": _join_url(karaoke_base, "/queue"), "description": "Fila local do karaoke."},
+        {"label": "Portal local", "url": portal_base, "description": "Portal administrativo do Dell."},
     ]
 
     public_links: list[dict[str, str]] = []
-    if public_base:
+    if public_tunnels.get("online") or portal_public:
         public_links = [
-            {
-                "label": "Portal publico",
-                "url": public_base,
-                "description": "Entrada principal do portal pela internet.",
-            },
-            {
-                "label": "Login publico",
-                "url": _join_url(public_base, "/login"),
-                "description": "Tela de login do portal.",
-            },
-            {
-                "label": "Painel publico",
-                "url": _join_url(public_base, "/painel"),
-                "description": "Painel do operador/admin via internet.",
-            },
-            {
-                "label": "Mesa",
-                "url": _join_url(public_base, "/mesa"),
-                "description": "Entrada para informar o numero/codigo da mesa.",
-            },
+            {"label": "Portal publico", "url": portal_public, "description": "Entrada do portal pela internet (Cloudflare)."},
+            {"label": "Login publico", "url": _join_url(portal_public, "/login"), "description": "Tela de login do portal."},
+            {"label": "Painel publico / Operacao", "url": _join_url(portal_public, "/operacao"), "description": "Painel operacional admin pela internet."},
+            {"label": "Mesa / entrada clientes", "url": _join_url(portal_public, "/"), "description": "Entrada para clientes informarem codigo da mesa."},
+            {"label": "Karaoke publico", "url": karaoke_public, "description": "Interface SmartokePy / fila publica (Cloudflare)."},
         ]
+        if unified_public and unified_public.rstrip("/") not in {portal_public.rstrip("/"), karaoke_public.rstrip("/")}:
+            public_links.insert(0, {"label": "Link publico unificado", "url": unified_public, "description": "URL primaria detectada do tunel."})
 
     return {
         "local": local_links,
@@ -353,15 +483,18 @@ def get_network_maestro_status() -> dict[str, object]:
 
     control_ready = bool(wifi_status.get("connected") or (primary_wifi and primary_wifi.get("is_up")))
     internet_available = _check_internet_reachability()
-    ngrok_status = _get_ngrok_status()
-    public_ready = bool(internet_available and ngrok_status["online"])
-    operational_links = _build_operational_links(ngrok_status)
+    public_tunnels = _get_public_tunnels_status()
+    ngrok_status = public_tunnels.get("ngrok") if isinstance(public_tunnels.get("ngrok"), dict) else {}
+    cloudflare_status = public_tunnels.get("cloudflare") if isinstance(public_tunnels.get("cloudflare"), dict) else {}
+    public_ready = bool(internet_available and public_tunnels.get("online"))
+    operational_links = _build_operational_links(public_tunnels)
     operating_mode = _build_operating_mode(
         control_ready,
         wifi_status,
         internet_available,
-        ngrok_status,
+        public_tunnels,
     )
+    operator_peer = _get_local_peer_status(wifi_status, bool(same_wifi_network or wifi_status.get("connected")))
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -379,15 +512,11 @@ def get_network_maestro_status() -> dict[str, object]:
             "ethernet_interfaces": ethernet_interfaces,
         },
         "wifi": wifi_status,
-        "operator_peer": {
-            **dell_wifi_status,
-            "same_network_as_raspberry": same_wifi_network,
-            "same_network_as_operator": same_wifi_network,
-        },
+        "operator_peer": operator_peer,
         "internet": {
             "online": internet_available,
             "message": (
-                "Internet detectada para uso do ngrok e servicos online."
+                "Internet detectada para uso do Cloudflare Tunnel e servicos online."
                 if internet_available
                 else "Sem internet agora. O controle local pelo Wi-Fi do Dell continua."
             ),
@@ -396,13 +525,15 @@ def get_network_maestro_status() -> dict[str, object]:
             "ready": public_ready,
             "mode": "internet-publica" if public_ready else "local-operador",
             "message": (
-                "Clientes podem usar o caminho publico pela internet."
+                "Clientes podem usar o caminho publico pela internet (Cloudflare)."
                 if public_ready
                 else "Clientes ainda nao tem um caminho publico confirmado."
             ),
         },
         "operational_links": operational_links,
         "operating_mode": operating_mode,
+        "public_tunnels": public_tunnels,
+        "cloudflare": cloudflare_status,
         "ngrok": ngrok_status,
     }
 
@@ -414,6 +545,8 @@ def get_network_maestro_contract() -> dict[str, object]:
     wifi = status.get("wifi", {})
     internet = status.get("internet", {})
     ngrok = status.get("ngrok", {})
+    cloudflare = status.get("cloudflare") if isinstance(status.get("cloudflare"), dict) else {}
+    public_tunnels = status.get("public_tunnels") if isinstance(status.get("public_tunnels"), dict) else {}
     operating_mode = status.get("operating_mode", {})
     operational_links = status.get("operational_links", {})
     operator_peer = status.get("operator_peer") or {}
@@ -453,6 +586,13 @@ def get_network_maestro_contract() -> dict[str, object]:
             "ngrok_online": bool(ngrok.get("online")),
             "ngrok_public_url": _clean_text(ngrok.get("public_url", "")),
             "ngrok_target": _clean_text(ngrok.get("target", "")),
+            "cloudflare_online": bool(cloudflare.get("online")),
+            "cloudflare_running": bool(cloudflare.get("running")),
+            "cloudflare_public_url": _clean_text(cloudflare.get("public_url", "")),
+            "cloudflare_portal": _clean_text(cloudflare.get("portal", "")),
+            "cloudflare_karaoke": _clean_text(cloudflare.get("karaoke", "")),
+            "public_tunnels_online": bool(public_tunnels.get("online")),
+            "public_tunnels_provider": _clean_text(public_tunnels.get("provider", "")),
         },
         "urls": {
             "local": local_links,

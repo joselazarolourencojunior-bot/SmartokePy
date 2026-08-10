@@ -39,9 +39,99 @@ class QueueManager:
     def _user_key(self, user: str) -> str:
         return " ".join(user.split()).casefold()
 
+    @staticmethod
+    def _parse_mesa_and_singer(user: str) -> tuple[str, str]:
+        """Extrai (mesa_codigo, nome_cantor) a partir do user string.
+
+        Padroes aceitos (case insensitive):
+          - "mesa-1: Carlos"             -> ("mesa-1", "Carlos")
+          - "Mesa 10 - Ana Clara"        -> ("mesa-10", "Ana Clara")
+          - "mesa_05|Pedro"              -> ("mesa-5", "Pedro")
+          - "[mesa-28]  Maria Silva"     -> ("mesa-28", "Maria Silva")
+          - "Carlos" (sem mesa)          -> ("global", "Carlos")
+          - "Operador" / "Admin" / vazio -> ("global", ...mantido)
+
+        Normaliza codigo da mesa para "mesa-<N>" (N inteiro sem 0-padding).
+        """
+        s = " ".join(str(user or "").split())
+        if not s.strip():
+            return ("global", "")
+
+        mesa = "global"
+        singer = s.strip()
+
+        # 1) Tenta extrair "mesa<sep><digitos>" no INICIO ou em qualquer lugar
+        patterns = [
+            r"^\s*\[?\s*mesa\s*[\-_ :/|]?\s*0*(\d+)\s*\]?\s*[\-:|\s]*\s*(.*)$",
+            r"\bmesa\s*[\-_ :/|]?\s*0*(\d+)\s*",
+        ]
+        import re as _re
+
+        m1 = _re.match(patterns[0], s, _re.IGNORECASE)
+        if m1:
+            n = int(m1.group(1))
+            resto = (m1.group(2) or "").strip(" :|-_|[]\t")
+            mesa = f"mesa-{n}"
+            if resto:
+                singer = resto
+        else:
+            m2 = _re.search(patterns[1], s, _re.IGNORECASE)
+            if m2:
+                n = int(m2.group(1))
+                mesa = f"mesa-{n}"
+                before = s[: m2.start()].strip(" :|-_|[]\t")
+                after = s[m2.end():].strip(" :|-_|[]\t")
+                singer = " ".join([x for x in [before, after] if x]).strip() or s.strip()
+
+        singer_clean = singer.strip(" :|-_|[]\t")
+        singer_out = singer_clean or s.strip()
+        return (mesa.casefold(), singer_out.casefold())
+
+    def is_singer_name_already_in_same_mesa(self, user: str) -> tuple[bool, str, str]:
+        """Verifica se ja existe outro cantor com MESMO NOME na MESMA MESA (na fila ou tocando agora).
+
+        Returns: (conflict: bool, conflicting_user_display: str, conflicting_mesa: str)
+        """
+        mesa_nova, singer_nova = self._parse_mesa_and_singer(user)
+        if not singer_nova or singer_nova in {"", "global", "pikaraoke", "randomizer", "admin", "operador"}:
+            return (False, "", mesa_nova)
+        now_playing_user = self._get_now_playing_user() if self._get_now_playing_user else None
+        all_users = [now_playing_user] if now_playing_user else []
+        all_users += [item.get("user") for item in self.queue if item.get("user")]
+
+        for other_user in all_users:
+            if other_user is None:
+                continue
+            m_out, s_out = self._parse_mesa_and_singer(other_user)
+            if not s_out:
+                continue
+            # Bloqueia SEMPRE que (mesa normalizada + nome normalizado) coincida
+            # Nao importa se eh a mesma string user ou outra pessoa com mesmo nome na mesa
+            # ou mesmo user repetindo (deve escolher outro nome, p ex "Carlos Silva" ou "Carlos #2")
+            if m_out == mesa_nova and s_out == singer_nova:
+                return (True, other_user, mesa_nova)
+        return (False, "", mesa_nova)
+
     def is_song_in_queue(self, song_path: str) -> bool:
         """Check if a song is already in the queue."""
         return any(item["file"] == song_path for item in self.queue)
+
+    def is_same_user_same_song_still_pending(self, song_path: str, user: str) -> bool:
+        """Retorna True SE E SOMENTE SE: (mesmo user) adicionou (mesma musica) e ELA AINDA ESTA NA FILA
+        (ou seja: ele ainda nao cantou essa musica). Qualquer outro caso -> False = LIBERADO.
+
+        - MESMO USER, MESMA MUSICA, AINDA NA FILA (nao cantou) -> True  = BLOQUEIA
+        - USUARIO DIFERENTE, MESMA MUSICA                     -> False = LIBERA
+        - MESMO USER, MUSICA JA CANTOU (saiu da fila)        -> False = LIBERA
+        - MESMO USER, OUTRA MUSICA                            -> False = fora do escopo
+        """
+        ukey = self._user_key(user)
+        if not ukey:
+            return False
+        for item in self.queue:
+            if item.get("file") == song_path and self._user_key(item.get("user", "")) == ukey:
+                return True
+        return False
 
     def is_user_limited(self, user: str) -> bool:
         """Check if a user has reached their queue limit."""
@@ -110,12 +200,42 @@ class QueueManager:
         """Add a song to the queue. Returns [success, message]."""
         title = self._resolve_title(song_path)
 
-        if self.is_song_in_queue(song_path):
-            logging.warning("Song is already in queue, will not add: " + song_path)
-            return [
-                False,
-                _("Song is already in the queue: %s") % title,
-            ]
+        # REGRA NOVA: APENAS MESMO USUARIO + MESMA MUSICA + AINDA NA FILA (nao cantou ainda) -> BLOQUEIA
+        # Qualquer outro caso (outro user quer a mesma musica, ou mesmo user ja cantou ela antes) -> LIBERA
+        if self.is_same_user_same_song_still_pending(song_path, user):
+            logging.warning(
+                "Same user same song still pending in queue rejected: user=%s song=%s"
+                % (str(user), str(song_path))
+            )
+            try:
+                msg = _(
+                    "Voce ja adicionou a musica '%s' e ela ainda esta na fila (ainda nao cantou). So pode repetir depois que cantar. Outros usuarios podem cantar a mesma musica normalmente."
+                ) % str(title)
+            except Exception:
+                msg = (
+                    f"Voce ja adicionou a musica '{title}' e ela ainda esta na fila (ainda nao cantou). "
+                    f"So pode repetir depois que cantar. Outros usuarios podem cantar a mesma musica normalmente."
+                )
+            return [False, msg]
+
+        # Regra: NOME IGUAL NA MESMA MESA -> Pede outro nome
+        conflict, conflict_user_display, conflict_mesa = self.is_singer_name_already_in_same_mesa(user)
+        if conflict:
+            logging.warning(
+                "Singer duplicate in same mesa rejected: user=%s conflict=%s mesa=%s song=%s"
+                % (user, conflict_user_display, conflict_mesa, song_path)
+            )
+            m_label = conflict_mesa if conflict_mesa and conflict_mesa != "global" else _("local")
+            try:
+                msg = _(
+                    "Ja existe um cantor com esse nome na mesa %s: '%s'. Por favor escolha outro nome (adicione um sobrenome ou apelido)."
+                ) % (str(m_label), str(conflict_user_display))
+            except Exception:
+                msg = (
+                    f"Ja existe um cantor com esse nome na mesa {m_label}: '{conflict_user_display}'. "
+                    f"Por favor escolha outro nome."
+                )
+            return [False, msg]
 
         if self.is_user_limited(user):
             limit = self._preferences.get_or_default("limit_user_songs_by")

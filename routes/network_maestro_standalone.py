@@ -96,11 +96,32 @@ def diagnostic():
             "primary_ip": (cc.get("primary") or {}).get("ipv4", ""),
             "message": cc.get("message", ""),
         }
-        ng = st.get("ngrok") or {}
+        cf = st.get("cloudflare") if isinstance(st.get("cloudflare"), dict) else {}
+        ng = st.get("ngrok") if isinstance(st.get("ngrok"), dict) else {}
+        pt = st.get("public_tunnels") if isinstance(st.get("public_tunnels"), dict) else {}
+        result["checks"]["cloudflare"] = {
+            "online": bool(cf.get("online")),
+            "running": bool(cf.get("running")),
+            "public_url": cf.get("public_url", ""),
+            "portal": cf.get("portal", ""),
+            "karaoke": cf.get("karaoke", ""),
+            "message": cf.get("message", ""),
+        }
+        result["checks"]["public_tunnels"] = {
+            "online": bool(pt.get("online")),
+            "provider": pt.get("provider", ""),
+            "message": pt.get("message", ""),
+            "public_url": pt.get("public_url", ""),
+        }
+        # Mantem campo 'ngrok' no JSON de diagnostico por compatibilidade antiga
         result["checks"]["ngrok"] = {
             "online": bool(ng.get("online")),
             "public_url": ng.get("public_url", ""),
-            "message": ng.get("message", ""),
+            "message": (
+                "Ngrok nao esta mais em uso. Trocamos por Cloudflare Tunnel (veja checks.cloudflare)."
+                if not ng.get("online")
+                else ng.get("message", "")
+            ),
         }
         try:
             nets = scan_wifi_networks(rescan=False) or []
@@ -118,10 +139,12 @@ def diagnostic():
 
 @network_maestro_standalone_bp.route("/api/public-urls")
 def public_urls():
-    """URLs locais e túneis (ngrok + Cloudflare) para o painel."""
+    """URLs locais e túneis (Cloudflare principal; ngrok como fallback)."""
     st = get_network_maestro_status()
     base_url = request.url_root.rstrip("/")
-    ng = st.get("ngrok") or {}
+    pt = st.get("public_tunnels") if isinstance(st.get("public_tunnels"), dict) else {}
+    cf = pt.get("cloudflare") if isinstance(pt.get("cloudflare"), dict) else {}
+    ng = pt.get("ngrok") if isinstance(pt.get("ngrok"), dict) else {}
     out = {
         "local": {
             "pikaraoke": base_url,
@@ -129,12 +152,16 @@ def public_urls():
             "splash": f"{base_url}/splash",
             "queue": f"{base_url}/queue",
         },
+        "provider": str(pt.get("provider", "") or "cloudflare"),
         "tunnels": {
-            "ngrok": ng.get("public_url", "") if ng.get("online") else "",
-            # Cloudflare Tunnels (documentados no RUNBOOK)
-            "portal_thermowatch": "https://portal.thermowatch.com.br",
-            "karaoke_thermowatch": "https://karaoke.thermowatch.com.br",
+            "ngrok": ng.get("public_url", "") if ng and ng.get("online") else "",
+            # Cloudflare Tunnels (RUNBOOK / Dell OptiPlex 7010)
+            "portal_thermowatch": cf.get("portal", "") if cf else "https://portal.thermowatch.com.br",
+            "karaoke_thermowatch": cf.get("karaoke", "") if cf else "https://karaoke.thermowatch.com.br",
+            "cloudflare": cf.get("public_url", "") if cf else "",
         },
+        "public_ready": bool(pt.get("online")),
+        "message": str(pt.get("message", "") or ""),
     }
     return jsonify(out)
 
