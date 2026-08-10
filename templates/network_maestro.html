@@ -48,24 +48,26 @@
 
     renderCard(
       "#control-channel-card",
-      "Canal de controle",
+      "Wi-Fi do Dell",
       value,
-      helperParts.join(" | ") || "Canal por cabo indisponivel.",
+      helperParts.join(" | ") || "Wi-Fi do Dell nao respondeu.",
       Boolean(controlChannel.ready)
     );
 
     const detail = $("#control-channel-detail");
-    if (!controlChannel.interfaces || !controlChannel.interfaces.length) {
-      detail.html('<div class="maestro-empty">Nenhuma interface de cabo detectada.</div>');
+    const ethernetList = controlChannel.ethernet_interfaces || [];
+    if (!ethernetList.length) {
+      detail.html('<div class="maestro-empty">Nenhuma interface Ethernet detectada.</div>');
       return;
     }
 
     detail.html(
-      controlChannel.interfaces.map((item) => `
+      ethernetList.map((item) => `
         <div class="maestro-mini-row">
           <strong>${item.name}</strong>
           <span>${item.ipv4 || "-"}</span>
           <span>${item.is_up ? "Link ativo" : "Sem link"}</span>
+          <span>${item.speed_mbps ? `${item.speed_mbps} Mbps` : ""}</span>
         </div>
       `).join("")
     );
@@ -84,7 +86,7 @@
 
     renderCard(
       "#wifi-status-card",
-      "Wi-Fi do Raspberry",
+      "Rede Wi-Fi",
       value,
       helperParts.join(" | ") || "Sem rede Wi-Fi conectada no momento.",
       Boolean(status.connected)
@@ -161,7 +163,7 @@
         }
 
         if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
-          showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai trocar automaticamente de rede.`, "is-warning", 4500);
+          showNotification(`Ao conectar em ${network.ssid}, o Dell vai trocar automaticamente de rede.`, "is-warning", 4500);
         }
 
         $("#password").focus();
@@ -198,7 +200,7 @@
 
   async function submitWifiConnection(ssid, password) {
     if (!wifiSetupAvailable) {
-      showNotification("O comando de Wi-Fi so fica disponivel no Raspberry com o assistente instalado.", "is-warning", 6000);
+      showNotification("O comando de Wi-Fi so fica disponivel no Dell com o assistente instalado.", "is-warning", 6000);
       return;
     }
     $("#connect-button").addClass("is-loading").prop("disabled", true);
@@ -253,7 +255,7 @@
 
     $("#refresh-networks").on("click", async function() {
       if (!wifiSetupAvailable) {
-        showNotification("O assistente de Wi-Fi nao esta disponivel neste equipamento.", "is-warning", 5000);
+        showNotification("O assistente de Wi-Fi nao esta disponivel no Dell.", "is-warning", 5000);
         return;
       }
       try {
@@ -286,7 +288,7 @@
 
     $("#disconnect-button").on("click", async function() {
       if (!wifiSetupAvailable) {
-        showNotification("O assistente de Wi-Fi nao esta disponivel neste equipamento.", "is-warning", 5000);
+        showNotification("O assistente de Wi-Fi nao esta disponivel no Dell.", "is-warning", 5000);
         return;
       }
       $("#disconnect-button").addClass("is-loading").prop("disabled", true);
@@ -322,7 +324,7 @@
     <p class="maestro-kicker">Maestro de Rede</p>
     <h1 class="maestro-title">Painel local do operador</h1>
     <p class="maestro-subtitle">
-      Este painel fica acessivel pelo Dell usando o cabo como canal de controle. Aqui voce acompanha o cabo, o Wi-Fi do Raspberry, a internet e o caminho de operacao do karaoke.
+      Este painel fica acessivel no Dell usando o Wi-Fi como canal de operacao. Aqui voce acompanha o Wi-Fi do Dell, a internet e os atalhos de uso do karaoke.
     </p>
   </div>
   <div class="maestro-hero-actions">
@@ -345,12 +347,12 @@
 
     <div class="maestro-card-grid">
       <div id="control-channel-card" class="maestro-status-card is-warning">
-        <span class="maestro-card-label">Canal de controle</span>
+        <span class="maestro-card-label">Wi-Fi do Dell</span>
         <strong class="maestro-card-value">Carregando...</strong>
         <p class="maestro-card-helper">Aguardando diagnostico.</p>
       </div>
       <div id="wifi-status-card" class="maestro-status-card is-warning">
-        <span class="maestro-card-label">Wi-Fi do Raspberry</span>
+        <span class="maestro-card-label">Rede Wi-Fi</span>
         <strong class="maestro-card-value">Carregando...</strong>
         <p class="maestro-card-helper">Aguardando diagnostico.</p>
       </div>
@@ -364,18 +366,18 @@
     <div class="maestro-detail-grid">
       <div class="maestro-detail-box">
         <div class="maestro-detail-header">
-          <h4>Canal por cabo</h4>
-          <span class="tag is-info is-light">Ponto a ponto</span>
+          <h4>Ethernet (enlace cabado)</h4>
+          <span class="tag is-info is-light">Se disponivel</span>
         </div>
         <div id="control-channel-detail" class="maestro-mini-list">
-          <div class="maestro-empty">Carregando status do cabo...</div>
+          <div class="maestro-empty">Nenhuma interface Ethernet ativa agora.</div>
         </div>
       </div>
 
       <div class="maestro-detail-box">
         <div class="maestro-detail-header">
           <h4>Atalhos atuais</h4>
-          <span class="tag is-info is-light">Acesso do Dell</span>
+          <span class="tag is-info is-light">Uso do operador</span>
         </div>
         <div id="maestro-access-list" class="maestro-mini-list">
           <div class="maestro-empty">Carregando links do painel...</div>
@@ -384,7 +386,7 @@
     </div>
 
     <div class="maestro-help-box">
-      <strong>Como usar:</strong> deixe este painel aberto no Dell. Em cada troca de local, primeiro confira se o canal por cabo esta pronto, depois conecte o Raspberry ao Wi-Fi do lugar e acompanhe se a internet apareceu.
+      <strong>Como usar:</strong> deixe este painel aberto no Dell. Em cada troca de local, primeiro conecte o Dell ao Wi-Fi do lugar e acompanhe se a internet apareceu.
     </div>
   </section>
 
@@ -407,7 +409,7 @@
       <div class="maestro-panel-header">
         <div>
           <p class="maestro-panel-eyebrow">Passo 2</p>
-          <h3>Comandar o Wi-Fi do Raspberry</h3>
+          <h3>Comandar o Wi-Fi do Dell</h3>
         </div>
         <button id="disconnect-button" type="button" class="button is-danger is-light is-small is-hidden">Desconectar Wi-Fi</button>
       </div>
@@ -431,7 +433,7 @@
           </div>
           <div class="maestro-inline-actions">
             <button id="toggle-password" type="button" class="button is-small is-dark is-outlined">Mostrar senha</button>
-            <span class="help mb-0">Se a rede for aberta, deixe em branco. O cabo continua sendo o canal de controle.</span>
+            <span class="help mb-0">Se a rede for aberta, deixe em branco.</span>
           </div>
         </div>
 

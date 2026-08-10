@@ -1,12 +1,13 @@
-"""Helpers for managing Raspberry Pi Wi-Fi connections via NetworkManager."""
+"""Helpers for managing Wi-Fi connections via NetworkManager (Dell or Raspberry Pi)."""
 
 from __future__ import annotations
 
 import shutil
 import subprocess
 import os
+from pathlib import Path
 
-from pikaraoke.lib.get_platform import is_linux, is_raspberry_pi
+from pikaraoke.lib.get_platform import is_linux
 
 
 class WifiSetupError(RuntimeError):
@@ -53,9 +54,9 @@ def _friendly_nmcli_error(error_text: str) -> str:
     if "a password is required" in lowered or "sudo:" in lowered:
         return "Falta liberar a permissao do nmcli no sistema para o assistente de Wi-Fi."
     if "networkmanager is not running" in lowered:
-        return "O servico de rede nao esta ativo no Raspberry no momento."
+        return "O servico de rede nao esta ativo no Dell no momento."
     if "device not found" in lowered:
-        return "Nao encontrei a interface Wi-Fi do Raspberry."
+        return "Nao encontrei a interface Wi-Fi do Dell."
     if error_text:
         return error_text
     return "Nao foi possivel concluir a configuracao do Wi-Fi."
@@ -72,7 +73,7 @@ def _split_nmcli_line(line: str) -> list[str]:
 
 def is_wifi_setup_supported() -> bool:
     """Return whether this host can manage Wi-Fi through nmcli."""
-    return is_linux() and is_raspberry_pi() and shutil.which("nmcli") is not None
+    return is_linux() and shutil.which("nmcli") is not None
 
 
 def _set_wifi_radio(enabled: bool) -> None:
@@ -80,23 +81,127 @@ def _set_wifi_radio(enabled: bool) -> None:
     _run_nmcli(["radio", "wifi", "on" if enabled else "off"])
 
 
-def get_wifi_device() -> str | None:
-    """Return the first Wi-Fi device managed by NetworkManager."""
-    if not is_wifi_setup_supported():
-        return None
+def _sysfs_discover_wifi_interfaces() -> list[str]:
+    """Fallback: find Wi-Fi interfaces via /sys/class/net and /proc/net/dev.
 
-    output = _run_nmcli(["-t", "-f", "DEVICE,TYPE", "device", "status"])
-    for line in output.splitlines():
-        if not line:
-            continue
-        device, dev_type = (line.split(":", 1) + [""])[:2]
-        if dev_type == "wifi":
-            return device
-    return None
+    Used when NetworkManager (nmcli) does not expose the Wi-Fi adapter,
+    for example when the adapter is managed by systemd-networkd,
+    netplan without NetworkManager backend, wpa_supplicant directly,
+    or when the current user does not have polkit permission for nmcli.
+    """
+    import re
+
+    found: set[str] = set()
+    try:
+        with open("/proc/net/dev", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = re.match(r"^\s*([a-zA-Z0-9_.\-]+):", line)
+                if not m:
+                    continue
+                name = m.group(1)
+                low = name.lower()
+                if low == "lo":
+                    continue
+                for prefix in ("wlan", "wl", "wlp", "wlo", "ra", "ath", "wls"):
+                    if low.startswith(prefix):
+                        found.add(name)
+                        break
+    except OSError:
+        pass
+
+    try:
+        sysfs_net = Path("/sys/class/net")
+        if sysfs_net.exists():
+            for entry in sysfs_net.iterdir():
+                name = entry.name
+                if name == "lo" or name in found:
+                    continue
+                try:
+                    wireless_flag = (entry / "wireless").exists()
+                    type_file = entry / "type"
+                    type_value = -1
+                    if type_file.exists():
+                        try:
+                            type_value = int(type_file.read_text().strip())
+                        except ValueError:
+                            pass
+                    phy80211 = any("phy80211" in p.name.lower() for p in entry.glob("phy80211*"))
+                    address_file = entry / "address"
+                    addr = ""
+                    if address_file.exists():
+                        addr = address_file.read_text().strip().lower()
+                    looks_like_wifi = wireless_flag or phy80211
+                    low = name.lower()
+                    if not looks_like_wifi:
+                        for prefix in ("wlan", "wl", "wlp", "wlo", "ra", "ath", "wls"):
+                            if low.startswith(prefix):
+                                looks_like_wifi = True
+                                break
+                    if looks_like_wifi and type_value != 772 and addr:  # != loopback
+                        found.add(name)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+    try:
+        import subprocess as sp
+
+        completed = sp.run(
+            ["/sbin/iw", "dev"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout:
+            for m in re.finditer(r"Interface\s+(\S+)", completed.stdout):
+                found.add(m.group(1))
+    except Exception:
+        pass
+
+    ordered: list[str] = []
+    for n in found:
+        try:
+            operstate = Path(f"/sys/class/net/{n}/operstate").read_text().strip()
+        except OSError:
+            operstate = ""
+        key = 0 if operstate == "up" else (1 if operstate == "unknown" else 2)
+        ordered.append((key, n))
+    ordered.sort()
+    return [n for _, n in ordered]
+
+
+def get_wifi_device() -> str | None:
+    """Return the first Wi-Fi device managed by NetworkManager.
+
+    Falls back to sysfs (/sys/class/net, /proc/net/dev, `iw dev`) when
+    NetworkManager is not running, has no permission to list devices or
+    simply does not manage the active Wi-Fi adapter. This is the case on
+    the Dell OptiPlex 7010 using netplan+systemd-networkd or the USB dongle
+    not claimed by NetworkManager (e.g. interface wlxd0374530f4fd).
+    """
+    if not is_wifi_setup_supported():
+        fallback = _sysfs_discover_wifi_interfaces()
+        return fallback[0] if fallback else None
+
+    try:
+        output = _run_nmcli(["-t", "-f", "DEVICE,TYPE", "device", "status"])
+        for line in output.splitlines():
+            if not line:
+                continue
+            device, dev_type = (line.split(":", 1) + [""])[:2]
+            if dev_type == "wifi" and device:
+                return device
+    except Exception:
+        pass
+
+    fallback = _sysfs_discover_wifi_interfaces()
+    return fallback[0] if fallback else None
 
 
 def get_wifi_status() -> dict[str, object]:
-    """Return current Wi-Fi state for the Raspberry Pi."""
+    """Return current Wi-Fi state for the Dell."""
     supported = is_wifi_setup_supported()
     device = get_wifi_device() if supported else None
 
@@ -112,7 +217,7 @@ def get_wifi_status() -> dict[str, object]:
     }
 
     if not supported:
-        status["message"] = "Disponivel apenas no Raspberry com NetworkManager."
+        status["message"] = "Disponivel apenas no Dell com NetworkManager."
         return status
 
     if not device:
@@ -162,7 +267,7 @@ def scan_wifi_networks(rescan: bool = True) -> list[dict[str, object]]:
     """Return nearby Wi-Fi networks ordered by quality."""
     device = get_wifi_device()
     if not device:
-        raise WifiSetupError("Nao encontrei a interface Wi-Fi do Raspberry.")
+        raise WifiSetupError("Nao encontrei a interface Wi-Fi do Dell.")
 
     _set_wifi_radio(True)
 
@@ -283,10 +388,10 @@ def _connect_with_profile(device: str, ssid: str, password: str | None, security
 
 
 def connect_wifi_network(ssid: str, password: str | None = None) -> dict[str, str]:
-    """Connect the Raspberry Pi to the given Wi-Fi network."""
+    """Connect the Dell to the given Wi-Fi network."""
     device = get_wifi_device()
     if not device:
-        raise WifiSetupError("Nao encontrei a interface Wi-Fi do Raspberry.")
+        raise WifiSetupError("Nao encontrei a interface Wi-Fi do Dell.")
 
     ssid = ssid.strip()
     if not ssid:
@@ -300,7 +405,7 @@ def connect_wifi_network(ssid: str, password: str | None = None) -> dict[str, st
         if _bring_up_saved_profile(ssid):
             status = get_wifi_status()
             return {
-                "message": f"Raspberry reconectado usando a senha salva da rede {ssid}.",
+                "message": f"Dell reconectado usando a senha salva da rede {ssid}.",
                 "ssid": str(status.get("ssid") or ssid),
                 "ip_address": str(status.get("ip_address") or ""),
             }
@@ -310,7 +415,7 @@ def connect_wifi_network(ssid: str, password: str | None = None) -> dict[str, st
         _connect_with_profile(device, ssid, password, security)
         status = get_wifi_status()
         return {
-            "message": f"Raspberry conectado ou em processo de conexao com a rede {ssid}.",
+            "message": f"Dell conectado ou em processo de conexao com a rede {ssid}.",
             "ssid": str(status.get("ssid") or ssid),
             "ip_address": str(status.get("ip_address") or ""),
         }
@@ -330,19 +435,19 @@ def connect_wifi_network(ssid: str, password: str | None = None) -> dict[str, st
 
     status = get_wifi_status()
     return {
-        "message": f"Raspberry conectado ou em processo de conexao com a rede {ssid}.",
+        "message": f"Dell conectado ou em processo de conexao com a rede {ssid}.",
         "ssid": str(status.get("ssid") or ssid),
         "ip_address": str(status.get("ip_address") or ""),
     }
 
 
 def disconnect_wifi_network() -> dict[str, str]:
-    """Disconnect the current Wi-Fi network while keeping the cable path untouched."""
+    """Disconnect the current Wi-Fi network."""
     device = get_wifi_device()
     if not device:
-        raise WifiSetupError("Nao encontrei a interface Wi-Fi do Raspberry.")
+        raise WifiSetupError("Nao encontrei a interface Wi-Fi do Dell.")
 
     _run_nmcli(["device", "disconnect", device], timeout=45)
     return {
-        "message": "Wi-Fi desconectado. O acesso pelo cabo continua disponivel.",
+        "message": "Wi-Fi desconectado. O acesso local continua enquanto o Wi-Fi voltar.",
     }

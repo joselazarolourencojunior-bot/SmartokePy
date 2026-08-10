@@ -6,10 +6,19 @@
 
 ## 1. Topologia final — duas portas, dois serviços, dois túneis Cloudflare
 
-| Serviço              | Porta | Caminho instalado                              | systemd           | Túnel Cloudflare               |
+| Serviço              | Porta | Caminho instalado (runtime REAL)                | systemd           | Túnel Cloudflare               |
 |----------------------|-------|------------------------------------------------|-------------------|--------------------------------|
-| Pikaraoke / SmartokePy (Flask + Websocket + HLS) | 5555  | `/opt/Karaoke/SmartokePy` (app.py, `python -m gevent.pywsgi.WSGIServer`) | `smartokepy.service` (antigo `pikaraoke.service`) | `karaoke.thermowatch.com.br` → 127.0.0.1:5555 |
+| Pikaraoke / SmartokePy (Flask + Websocket + HLS) | 5555  | **`/opt/Karaoke/pikaraoke`** (app.py, `python -m pikaraoke.app`). Há outra cópia em `/opt/Karaoke/SmartokePy` (wrapper/git) — NÃO É USADA EM RUNTIME. | `smartokepy.service` (antigo `pikaraoke.service`) | `karaoke.thermowatch.com.br` → 127.0.0.1:5555 |
 | Karaoke Guard (React SPA + Node API SQLite)      | 3001  | `/opt/Karaoke/acess-karaoke/build-server/api/server.js` (servindo `dist/`) | `karaoke-guard.service` | `portal.thermowatch.com.br` → 127.0.0.1:3001 |
+
+> 🚨 **REGRA DE OURO Nº 1 (CUSTOU HORAS PARA DESCOBRIR):**
+> O `smartokepy.service` usa `WorkingDirectory=/opt/Karaoke` e `PYTHONPATH=/opt/Karaoke`, então ele importa `pikaraoke.*` da pasta **`/opt/Karaoke/pikaraoke/`** (o `.git` está dentro dela — é o repo DE FATO).
+> A pasta `/opt/Karaoke/SmartokePy/` é só uma árvore secundária com `.venv` e um git clone vazio — NÃO usada em runtime!
+> **Sempre** para `git pull`, editar arquivos, aplicar patches do SmartokePy no Dell → entra em **`cd /opt/Karaoke/pikaraoke`**, não em `/opt/Karaoke/SmartokePy`.
+> **Só** usa `/opt/Karaoke/SmartokePy` para ativar o venv (`source .venv/bin/activate`) se quiser rodar manualmente.
+
+> 🚨 **REGRA DE OURO Nº 2:**
+> O portal acess-karaoke (porta 3001) continua em `/opt/Karaoke/acess-karaoke/` — essa é a pasta certa, não muda.
 
 - **IP local fixo do Dell:** `192.168.15.9` (WiFi integrado do OptiPlex 7010)
 - **SSH remoto (se estiver na mesma rede):** `ssh karaoke@192.168.15.9`
@@ -67,9 +76,14 @@ Arquivo: [app.py](file:///c:/Users/Usuario/Desktop/Lazaro%2018-09-25/Karaoke/Sma
 ### 2.5. Como aplicar patches no Dell (SSH) sem precisar de SCP
 Sempre usar `python3 -c` ou `python3 <<PYEOF` inline (trocar `os.sep` + `pathlib`) em vez de comandos bash com backtick que quebram no PowerShell/SSH Windows.
 
+> 🚨 **Antes de qualquer patch do SmartokePy, SEMPRE FAZ:**
+> ```bash
+> cd /opt/Karaoke/pikaraoke   # NÃO use /opt/Karaoke/SmartokePy (não é runtime)
+> ```
+
 Exemplo padrão:
 ```bash
-cd /opt/Karaoke/SmartokePy && python3 <<PYEOF
+cd /opt/Karaoke/pikaraoke && python3 <<PYEOF
 import pathlib
 p = pathlib.Path('static/js/splash.js')
 s = p.read_text().replace("const playbackStartTimeout = 20000","const playbackStartTimeout = 90000")
@@ -77,6 +91,39 @@ p.write_text(s); print("OK")
 PYEOF
 sudo systemctl restart smartokepy
 ```
+
+### 2.6. Rotas novas para o painel /maestro (compat com portal React 3001)
+O `network_maestro_standalone_bp` (`/maestro/*`) tem que estar REGISTRADO no `app.py`:
+
+```python
+# app.py — essenciais (linhas ~48 e ~124)
+from pikaraoke.routes.network_maestro_standalone import network_maestro_standalone_bp
+# ...
+app.register_blueprint(network_maestro_standalone_bp, url_prefix="/maestro")
+```
+
+**4 endpoints novos criados em `routes/network_maestro_standalone.py`** (compat com frontend de operação no portal React):
+- `GET /maestro/api/state` → alias para `/status` (frontend React usa state)
+- `GET /maestro/api/networks` → alias para `/api/wifi/networks`
+- `GET /maestro/api/diagnostic` → diagnóstico consolidado (internet, modo operacional, ngrok, wifi_scan)
+- `GET /maestro/api/public-urls` → URLs locais e túneis (Cloudflare thermowatch)
+
+**Sintoma resolvido:** A tela do Maestro de Rede no Dell mostrava tudo "Carregando..." + "Falha ao carregar os dados" vermelho. O app.py não tinha o `register_blueprint(... url_prefix="/maestro")` — todas as rotas davam HTTP 404.
+
+### 2.7. Descobridor de interface Wi-Fi (fallback sysfs) — `lib/wifi_setup.py`
+**Sintoma:**
+```
+GET /maestro/api/wifi/networks -> {"error":"Nao encontrei a interface Wi-Fi do Raspberry.","networks":[]}
+```
+
+Mesmo com o NetworkManager (nmcli) instalado, a interface Wi-Fi USB do Dell (`wlxd0374530f4fd` dongle) não era gerenciada pelo NM — ou era gerenciada por `systemd-networkd`/`netplan` puro. A função `get_wifi_device()` só usava `nmcli -t device status`, que devolvia vazio.
+
+**Resolvido:** Adicionado `_sysfs_discover_wifi_interfaces()` como fallback em `lib/wifi_setup.py` que procura em:
+1. `/proc/net/dev` (prefixos wlan, wl, wlp, wlo, ra, ath, wls)
+2. `/sys/class/net/*/wireless` + `phy80211*` + `type`
+3. `/sbin/iw dev` output
+
+Interfacer com `operstate=up` aparecem primeiro. Resultado no Dell: `wlxd0374530f4fd` é encontrado e o scan de redes funciona.
 
 ---
 

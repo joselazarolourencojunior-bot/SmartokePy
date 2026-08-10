@@ -45,6 +45,7 @@ from pikaraoke.routes.images import images_bp
 from pikaraoke.routes.info import info_bp
 from pikaraoke.routes.metadata_api import metadata_bp
 from pikaraoke.routes.network_maestro import network_maestro_bp
+from pikaraoke.routes.network_maestro_standalone import network_maestro_standalone_bp
 from pikaraoke.routes.now_playing import nowplaying_bp
 from pikaraoke.routes.preferences import preferences_bp
 from pikaraoke.routes.queue import queue_bp
@@ -61,9 +62,10 @@ except ModuleNotFoundError:
 _ = flask_babel.gettext
 
 from gevent.pywsgi import WSGIServer
+from geventwebsocket.handler import WebSocketHandler
 
 args = parse_pikaraoke_args()
-socketio = SocketIO(async_mode="gevent", cors_allowed_origins=args.url)
+socketio = SocketIO(cors_allowed_origins="*")
 babel = Babel()
 
 
@@ -120,6 +122,8 @@ for bp in _api_blueprints:
 
 for bp in _internal_blueprints:
     app.register_blueprint(bp)
+
+app.register_blueprint(network_maestro_standalone_bp, url_prefix="/maestro")
 
 
 def get_locale() -> str | None:
@@ -290,7 +294,13 @@ def main() -> None:
 
     spawn(upgrade_youtubedl)
 
-    server = WSGIServer(("0.0.0.0", int(args.port)), app, log=None, error_log=logging.getLogger())
+    server = WSGIServer(
+        ("0.0.0.0", int(args.port)),
+        app,
+        log=None,
+        error_log=logging.getLogger(),
+        handler_class=WebSocketHandler,
+    )
     server.start()
 
     # Handle sigterm, apparently cherrypy won't shut down without explicit handling

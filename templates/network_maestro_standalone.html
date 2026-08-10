@@ -377,7 +377,7 @@
     <section class="hero">
       <div>
         <p class="kicker">Maestro de Rede</p>
-        <h1>Painel independente do operador</h1>
+        <h1>Painel do operador (Dell local)</h1>
       </div>
       <div class="hero-actions">
         <button id="refreshStatusButton" class="button button-primary">Atualizar agora</button>
@@ -407,17 +407,17 @@
 
       <div class="grid-4">
         <div id="controlCard" class="status-card warning">
-          <span class="card-label">Canal de controle</span>
+          <span class="card-label">Wi-Fi do Dell</span>
           <strong class="card-value">Carregando...</strong>
           <p class="card-helper">Aguardando diagnostico.</p>
         </div>
         <div id="wifiCard" class="status-card warning">
-          <span class="card-label">Wi-Fi do Raspberry</span>
+          <span class="card-label">Rede Wi-Fi</span>
           <strong class="card-value">Carregando...</strong>
           <p class="card-helper">Aguardando diagnostico.</p>
         </div>
         <div id="partnerCard" class="status-card warning">
-          <span class="card-label">Wi-Fi do Dell</span>
+          <span class="card-label">Operador remoto</span>
           <strong class="card-value">Carregando...</strong>
           <p class="card-helper">Aguardando diagnostico.</p>
         </div>
@@ -438,12 +438,12 @@
           <div class="panel-header" style="margin-bottom: 12px;">
             <div>
               <p class="eyebrow">Canal adicional</p>
-              <h3>Cabo</h3>
+              <h3>Ethernet (enlace cabado)</h3>
             </div>
-            <span class="tag">Backup</span>
+            <span class="tag">Se disponivel</span>
           </div>
           <div id="controlDetails" class="mini-list">
-            <div class="empty">Carregando status do cabo...</div>
+            <div class="empty">Nenhuma interface Ethernet ativa agora.</div>
           </div>
         </div>
 
@@ -481,9 +481,9 @@
       <section class="panel">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">Passo 2</p>
-            <h2>Wi-Fi do Raspberry</h2>
-          </div>
+              <p class="eyebrow">Passo 2</p>
+              <h2>Wi-Fi do Dell</h2>
+            </div>
           <button id="disconnectButton" class="button button-danger" style="display:none;">Desconectar Wi-Fi</button>
         </div>
 
@@ -558,19 +558,21 @@
         primary.ipv4 ? `IP ${primary.ipv4}` : "",
         primary.speed_mbps ? `${primary.speed_mbps} Mbps` : ""
       ].filter(Boolean).join(" | ");
-      setStatusCard("controlCard", Boolean(control.ready), "Canal de controle", value, helper || "Canal por cabo indisponivel.");
+      setStatusCard("controlCard", Boolean(control.ready), "Wi-Fi do Dell", value, helper || "Wi-Fi do Dell nao respondeu.");
 
       const detail = document.getElementById("controlDetails");
-      if (!control.interfaces || !control.interfaces.length) {
-        detail.innerHTML = '<div class="empty">Nenhuma interface de cabo detectada.</div>';
+      const ethernetList = control.ethernet_interfaces || [];
+      if (!ethernetList.length) {
+        detail.innerHTML = '<div class="empty">Nenhuma interface Ethernet ativa agora.</div>';
         return;
       }
 
-      detail.innerHTML = control.interfaces.map((item) => `
+      detail.innerHTML = ethernetList.map((item) => `
         <div class="mini-row">
           <strong>${item.name}</strong>
           <span>${item.ipv4 || "-"}</span>
           <span>${item.is_up ? "Link ativo" : "Sem link"}</span>
+          <span>${item.speed_mbps ? `${item.speed_mbps} Mbps` : ""}</span>
         </div>
       `).join("");
     }
@@ -579,12 +581,12 @@
       currentWifiStatus = status;
       const value = status.connected ? (status.ssid || "Conectado") : "Sem rede";
       const helper = [
-        status.connected ? "Raspberry conectado" : "Raspberry sem Wi-Fi",
+        status.connected ? "Dell conectado" : "Dell sem Wi-Fi",
         status.device ? `Interface ${status.device}` : "",
         status.ip_address ? `IP ${status.ip_address}` : "",
         status.signal == null ? "" : `Sinal ${status.signal}% (${signalLabel(status.signal)})`,
       ].filter(Boolean).join(" | ");
-      setStatusCard("wifiCard", Boolean(status.connected), "Wi-Fi do Raspberry", value, helper || "Sem rede Wi-Fi conectada no momento.");
+      setStatusCard("wifiCard", Boolean(status.connected), "Rede Wi-Fi", value, helper || "Sem rede Wi-Fi conectada no momento.");
       document.getElementById("disconnectButton").style.display = status.connected ? "inline-flex" : "none";
     }
 
@@ -594,19 +596,20 @@
       const connected = Boolean(status.wifi_connected);
       const value = connected ? (status.wifi_ssid || "Conectado") : (status.reachable ? "Sem rede" : "Sem resposta");
       const helper = [
-        connected ? "Dell conectado" : (status.reachable ? "Dell sem Wi-Fi" : "Dell sem resposta"),
+        status.reachable ? "Operador disponivel" : "Operador sem resposta",
         status.host ? `Host ${status.host}` : "",
         status.wifi_ip ? `IP ${status.wifi_ip}` : "",
-        sameNetwork ? "Mesma rede do Raspberry" : "",
-        !sameNetwork && connected ? "Rede diferente do Raspberry" : "",
+        connected ? status.wifi_ssid || "Wi-Fi conectado" : "Sem Wi-Fi",
+        sameNetwork ? "Mesma rede do Dell" : "",
+        !sameNetwork && connected ? "Rede diferente do Dell" : "",
       ].filter(Boolean).join(" | ");
 
       setStatusCard(
         "partnerCard",
-        Boolean(status.reachable && connected && sameNetwork),
-        "Wi-Fi do Dell",
+        Boolean(status.reachable && connected),
+        "Operador remoto",
         value,
-        helper || status.message || "Sem leitura remota do Dell."
+        helper || status.message || "Sem leitura remota do operador."
       );
     }
 
@@ -716,8 +719,8 @@
         card.type = "button";
         card.className = "network-card";
         const badges = [];
-        const raspberryUsing = Boolean(network.in_use);
-        const dellUsing = Boolean(
+        const dellUsing = Boolean(network.in_use);
+        const partnerUsing = Boolean(
           currentPartnerStatus &&
           currentPartnerStatus.wifi_connected &&
           currentPartnerStatus.wifi_ssid &&
@@ -725,11 +728,11 @@
         );
 
         if (network.saved) badges.push('<span class="pill">Senha salva</span>');
-        if (raspberryUsing && dellUsing) {
+        if (dellUsing && partnerUsing) {
           badges.push('<span class="pill">Em uso nos dois</span>');
         } else {
-          if (raspberryUsing) badges.push('<span class="pill">Em uso no Raspberry</span>');
           if (dellUsing) badges.push('<span class="pill">Em uso no Dell</span>');
+          if (partnerUsing) badges.push('<span class="pill">Em uso no operador remoto</span>');
         }
         card.innerHTML = `
           <div class="network-title">${network.ssid}</div>
@@ -754,10 +757,10 @@
           }
 
           if (currentWifiStatus && currentWifiStatus.connected && currentWifiStatus.ssid && currentWifiStatus.ssid !== network.ssid) {
-            const dellNote = currentPartnerStatus?.reachable
-              ? " O Dell tambem vai tentar acompanhar essa troca."
-              : " O Dell nao esta sendo lido agora, entao confirme depois se ele acompanhou.";
-            showNotification(`Ao conectar em ${network.ssid}, o Raspberry vai trocar automaticamente de rede.${dellNote}`, "warning", 5200);
+            const partnerNote = currentPartnerStatus?.reachable
+              ? " O operador remoto tambem vai tentar acompanhar essa troca."
+              : " O operador remoto nao esta sendo lido agora, entao confirme depois se ele acompanhou.";
+            showNotification(`Ao conectar em ${network.ssid}, o Dell vai trocar automaticamente de rede.${partnerNote}`, "warning", 5200);
           }
 
           document.getElementById("password").focus();
