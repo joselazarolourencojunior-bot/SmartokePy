@@ -55,30 +55,111 @@ def wifi_networks():
     try:
         return jsonify({"networks": scan_wifi_networks(rescan=rescan)})
     except WifiSetupError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"error": str(exc), "networks": []}), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc), "networks": []}), 200
+
+
+# ---------- Compatibilidade com portal React acess-karaoke ----------
+
+@network_maestro_standalone_bp.route("/api/state")
+def state_alias():
+    """Alias para /api/status — usado pelo painel Operação do acess-karaoke."""
+    return status()
+
+
+@network_maestro_standalone_bp.route("/api/networks")
+def networks_alias():
+    """Alias para /api/wifi/networks com fallback seguro."""
+    try:
+        return wifi_networks()
+    except Exception as exc:
+        return jsonify({"networks": [], "error": str(exc)}), 200
+
+
+@network_maestro_standalone_bp.route("/api/diagnostic")
+def diagnostic():
+    """Resumo agregado de diagnóstico para o painel de Operação."""
+    import traceback
+
+    result = {"checks": {}, "ok": True, "errors": []}
+    try:
+        st = get_network_maestro_status()
+        result["checks"]["internet"] = {
+            "online": bool((st.get("internet") or {}).get("online")),
+            "message": (st.get("internet") or {}).get("message", ""),
+        }
+        cc = st.get("control_channel") or {}
+        result["checks"]["control_channel"] = {
+            "ready": bool(cc.get("ready")),
+            "mode": cc.get("mode", ""),
+            "primary_ip": (cc.get("primary") or {}).get("ipv4", ""),
+            "message": cc.get("message", ""),
+        }
+        ng = st.get("ngrok") or {}
+        result["checks"]["ngrok"] = {
+            "online": bool(ng.get("online")),
+            "public_url": ng.get("public_url", ""),
+            "message": ng.get("message", ""),
+        }
+        try:
+            nets = scan_wifi_networks(rescan=False) or []
+            result["checks"]["wifi_scan"] = {"ok": True, "count": len(nets)}
+        except Exception as exc:
+            result["checks"]["wifi_scan"] = {"ok": False, "error": str(exc)}
+            result["ok"] = False
+            result["errors"].append(f"wifi_scan: {exc}")
+    except Exception as exc:
+        result["ok"] = False
+        result["errors"].append(f"status_base: {exc}")
+        result["traceback"] = traceback.format_exc()
+    return jsonify(result)
+
+
+@network_maestro_standalone_bp.route("/api/public-urls")
+def public_urls():
+    """URLs locais e túneis (ngrok + Cloudflare) para o painel."""
+    st = get_network_maestro_status()
+    base_url = request.url_root.rstrip("/")
+    ng = st.get("ngrok") or {}
+    out = {
+        "local": {
+            "pikaraoke": base_url,
+            "maestro": f"{base_url}/maestro/",
+            "splash": f"{base_url}/splash",
+            "queue": f"{base_url}/queue",
+        },
+        "tunnels": {
+            "ngrok": ng.get("public_url", "") if ng.get("online") else "",
+            # Cloudflare Tunnels (documentados no RUNBOOK)
+            "portal_thermowatch": "https://portal.thermowatch.com.br",
+            "karaoke_thermowatch": "https://karaoke.thermowatch.com.br",
+        },
+    }
+    return jsonify(out)
 
 
 @network_maestro_standalone_bp.route("/api/wifi/connect", methods=["POST"])
 def wifi_connect():
-    """Connect the Raspberry Pi and sync the Dell to the same Wi-Fi network."""
+    """Connect Dell Wi-Fi and sync the operator peer to the same network when available."""
     payload = request.get_json(silent=True) or request.form
     ssid = str(payload.get("ssid", "")).strip()
     password = str(payload.get("password", "")).strip()
 
     try:
-        raspberry_result = connect_wifi_network(ssid, password or None)
+        dell_result = connect_wifi_network(ssid, password or None)
     except WifiSetupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
 
     try:
-        dell_result = connect_dell_wifi_network(ssid, password or None)
+        peer_result = connect_dell_wifi_network(ssid, password or None)
     except DellWifiSyncError as exc:
         return (
             jsonify(
                 {
                     "success": False,
-                    "error": f"{raspberry_result.get('message', 'Raspberry conectado.')} Mas o Dell nao acompanhou: {exc}",
-                    "raspberry": raspberry_result,
+                    "error": f"{dell_result.get('message', 'Dell conectado.')} Mas o operador remoto nao acompanhou: {exc}",
+                    "dell": dell_result,
                 }
             ),
             502,
@@ -87,30 +168,30 @@ def wifi_connect():
     return jsonify(
         {
             "success": True,
-            "message": f"{raspberry_result.get('message', '')} {dell_result.get('message', '')}".strip(),
-            "raspberry": raspberry_result,
+            "message": f"{dell_result.get('message', '')} {peer_result.get('message', '')}".strip(),
             "dell": dell_result,
+            "peer": peer_result,
         }
     )
 
 
 @network_maestro_standalone_bp.route("/api/wifi/disconnect", methods=["POST"])
 def wifi_disconnect():
-    """Disconnect Raspberry and Dell Wi-Fi while keeping the cable access alive."""
+    """Disconnect Dell and operator peer Wi-Fi when available."""
     try:
-        raspberry_result = disconnect_wifi_network()
+        dell_result = disconnect_wifi_network()
     except WifiSetupError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
 
     try:
-        dell_result = disconnect_dell_wifi_network()
+        peer_result = disconnect_dell_wifi_network()
     except DellWifiSyncError as exc:
         return (
             jsonify(
                 {
                     "success": False,
-                    "error": f"{raspberry_result.get('message', 'Wi-Fi do Raspberry desconectado.')} Mas o Dell nao acompanhou: {exc}",
-                    "raspberry": raspberry_result,
+                    "error": f"{dell_result.get('message', 'Wi-Fi do Dell desconectado.')} Mas o operador remoto nao acompanhou: {exc}",
+                    "dell": dell_result,
                 }
             ),
             502,
@@ -119,8 +200,8 @@ def wifi_disconnect():
     return jsonify(
         {
             "success": True,
-            "message": f"{raspberry_result.get('message', '')} {dell_result.get('message', '')}".strip(),
-            "raspberry": raspberry_result,
+            "message": f"{dell_result.get('message', '')} {peer_result.get('message', '')}".strip(),
             "dell": dell_result,
+            "peer": peer_result,
         }
     )
