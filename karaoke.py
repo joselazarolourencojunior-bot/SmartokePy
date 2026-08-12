@@ -734,6 +734,12 @@ class Karaoke:
                     # Se o cantor da vez NÃO TEM NENHUMA MÚSICA NA FILA:
                     #  → NINGUÉM toca (mesmo que o resto da lista tenha 100 músicas).
                     #  → Sistema bloqueia e CHAMA o cantor obrigatório URGENTE.
+                    #
+                    # MUDANÇA 2026-08-12 (opção usuário TRAVAR ATÉ ADICIONAR):
+                    # Regra 100% confirmada: NÃO PULA AUTOMATICAMENTE quem NÃO TEM música.
+                    # Trava tudo até o operador: (A) ADICIONAR MÚSICA para o cantor obrigatório
+                    # (match nome/aliases tem que estar certo!) OU (B) clicar em "Pular rodada"
+                    # no card daquele cantor. Assim que a música for adicionada, toca NA HORA.
                     # ============================================================
                     _sm = getattr(self, "singer_manager", None)
                     song = None
@@ -747,10 +753,22 @@ class Karaoke:
                         )
                         if _prox_cantor is not None:
                             _prox_cantor_nome_display = str(_prox_nome)
+                            logging.info(
+                                "[LEI SAGRADA RUN LOOP] Tentando obter musica do "
+                                "PROXIMO OBRIGATORIO DA VEZ: singer_name=%r singer_id=%s "
+                                "fila_qtd=%d",
+                                _prox_cantor_nome_display,
+                                str(getattr(_prox_cantor, "singer_id", "?")),
+                                len(_qit),
+                            )
                             song = self.queue_manager.pop_next_only_for_singer(_prox_cantor)
                             if song is None:
-                                # ☠️ BLOQUEIO TOTAL: cantor da vez NÃO TEM MÚSICA.
-                                # Ninguém toca, nem se o resto tem 10 músicas.
+                                # ☠️ BLOQUEIO TOTAL CONFIRMADO: cantor da vez NAO TEM MUSICA.
+                                # Motivo 99%: OU realmente nao adicionou nenhuma musica dele;
+                                # OU adicionou mas com user string NOME DIFERENTE do nome/aliases
+                                # do card do cantor (falta linkar alias). O warning do
+                                # pop_next_only_for_singer ja logou todos users da fila vs nome/aliases
+                                # dele pro operador comparar e corrigir.
                                 _cantor_bloqueado_sem_musica = True
                     # FALLBACK: se não tem singer manager, ou nenhum cantor cadastrado
                     # (ex: sistema só usando fila randomizer / Pikaraoke antigo normal)
@@ -763,20 +781,38 @@ class Karaoke:
                             _ult = float(getattr(self, "_vez_sagrada_last_block_notif", 0.0))
                             if (agora - _ult) >= 10.0:
                                 self._vez_sagrada_last_block_notif = agora
-                                msg_urg = (
-                                    f"🚨🚨🚨 [VEZ SAGRADA BLOQUEADA] A PRÓXIMA VEZ É DE: "
-                                    f"'{_prox_cantor_nome_display}' (ordem de chegada). "
-                                    f"ELE/AINDA NÃO ADICIONOU NENHUMA MÚSICA! "
-                                    f"⚠️ NINGUÉM VAI CANTAR ATÉ QUE '{_prox_cantor_nome_display}' "
-                                    f"ADICIONE UMA MÚSICA OU CLIQUE EM 'PULAR RODADA'. "
-                                    f"Não adianta os outros cantores adicionarem música antes: "
-                                    f"o sistema OBEDECE A ORDEM DE CHEGADA SEMPRE."
-                                )
+                                _fila_qtd = len(getattr(self.queue_manager, "queue", []) or [])
+                                if _fila_qtd > 0:
+                                    # Caso SUPER COMUM de bug que trava e usuario chora:
+                                    # tem musica na fila MAS NENHUMA DO CANTOR OBRIGATORIO
+                                    # (nome errado / falta alias). Mostra dica especifica.
+                                    msg_urg = (
+                                        f"🚨🚨🚨 [VEZ SAGRADA BLOQUEADA] A PRÓXIMA VEZ É DE: "
+                                        f"'{_prox_cantor_nome_display}' (ordem de chegada). "
+                                        f"⚠️ TEM {_fila_qtd} MÚSICA(S) NA FILA, MAS NENHUMA É DELE/ELA! "
+                                        f"O que fazer: (A) Adicione a música com o MESMO NOME do card do cantor "
+                                        f"('{_prox_cantor_nome_display}') — ou — (B) na página /singers, abra o card dele "
+                                        f"e CLIQUE EM '✏️ Adicionar alias' para linkar o NOME ERRADO QUE VOCÊ USOU "
+                                        f"QUANDO ADICIONOU A MÚSICA (ex: 'Simone Silva na fila → alias no card'). "
+                                        f"⚠️ NINGUÉM VAI CANTAR ATÉ QUE '{_prox_cantor_nome_display}' tenha "
+                                        f"uma música dele/ela na fila OU você clique em 'Pular rodada' no card dele."
+                                    )
+                                else:
+                                    msg_urg = (
+                                        f"🚨🚨🚨 [VEZ SAGRADA BLOQUEADA] A PRÓXIMA VEZ É DE: "
+                                        f"'{_prox_cantor_nome_display}' (ordem de chegada). "
+                                        f"ELE/AINDA NÃO ADICIONOU NENHUMA MÚSICA! "
+                                        f"⚠️ NINGUÉM VAI CANTAR ATÉ QUE '{_prox_cantor_nome_display}' "
+                                        f"ADICIONE UMA MÚSICA OU CLIQUE EM 'PULAR RODADA' no card dele. "
+                                        f"Não adianta os outros cantores adicionarem música antes: "
+                                        f"o sistema OBEDECE A ORDEM DE CHEGADA SEMPRE."
+                                    )
                                 self.log_and_send(msg_urg, "danger")
                                 try: self.events.emit("queue_update")
                                 except Exception: pass
                                 try: self.events.emit("now_playing_update")
                                 except Exception: pass
+                                logging.error(msg_urg)
                         continue
                     # ============== CORRECAO TELA ATUALIZAR NA HORA (JUNIOR SIMONE REFRESH) ==============
                     # Pop_next REMOVEU a 1a musica da fila para agora tocar. A ORDEM DA FILA MUDOU!

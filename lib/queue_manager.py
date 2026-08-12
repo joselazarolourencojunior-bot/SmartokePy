@@ -163,15 +163,48 @@ class QueueManager:
         """Verifica se ja existe OUTRO cantor DIFERENTE com MESMO NOME na MESMA MESA (na fila
         ou tocando agora).
 
-        IMPORTANTE (regra do Junior poder adicionar 10 musicas):
-          - NAO BLOQUEIA se for O MESMO USUARIO (mesma key normalizada) — afinal e o MESMO cantor
-            querendo adicionar varias musicas (Junior adicionar musica #1, #2, ..., #10 = OK).
-          - SO BLOQUEIA quando aparece OUTRO usuario (key normalizada DIFERENTE) mas MESMA combinacao
-            mesa + nome normalizado (evita 2 pessoas diferentes com apelidos colidindo, ex: duas
-            pessoas querendo usar "Mesa 3" ao mesmo tempo, ou dois clientes com "Junior" como nome).
+        IMPORTANTE (regras em ORDEM DE PRIORIDADE CRESCENTE, do mais forte pro mais fraco):
+
+        0) [FASE 2 - CANTORES PARALELOS (2026-08-12) - PRIORIDADE MAXIMA SOBRE TODAS OUTRAS:]
+           Se o user sendo adicionado MATCH com QUALQUER Singer (cantor paralelo) ja cadastrado
+           no SingerManager (matches_queue_user(singer, user) == True, ou seja nome igual
+           OU algum alias igual) -> SEMPRE LIBERADO, retorna False imediatamente.
+           Por que? Porque se existe um Singer chamado "Simone" no /singers, e o usuario
+           tenta adicionar uma musica com user="Simone" -> isso EXATAMENTE eh o cantor paralelo
+           Simone adicionando/linkando a musica a ELE MESMO. Nao eh 2 pessoas brigando pelo nome!
+           Esse eh o BUG CRITICO de 12/08: Simone nao conseguia add musica pq is_singer_name
+           bloqueava achando que era conflito (mas era o proprio cantor Simone!).
+
+        1) (antiga regra de Junior add 10 musicas) NAO BLOQUEIA se for EXATAMENTE o MESMO
+           usuario (mesma _user_key normalizada) - afinal e o MESMO cantor querendo add varias
+           musicas (Junior #1, #2, #3, ... #10 = OK).
+        2) SO BLOQUEIA quando aparece OUTRO usuario (key normalizada DIFERENTE) mas MESMA
+           combinacao mesa + nome normalizado (evita 2 pessoas diferentes usando o mesmo apelido
+           sem cadastrar alias, ex: duas pessoas querendo usar "Mesa 3" + "Junior" ao mesmo tempo).
 
         Returns: (conflict: bool, conflicting_user_display: str, conflicting_mesa: str)
         """
+        # ========================================================================
+        # FASE 2 (0): user MATCH com algum Singer cadastrado? -> LIBERADO SEMPRE!
+        # ========================================================================
+        sm: Any | None = getattr(self, "_singer_manager", None)
+        if sm is not None:
+            try:
+                all_singers_list: list | None = getattr(sm, "_singers", None)
+                if all_singers_list and isinstance(all_singers_list, (list, tuple)):
+                    matches_method = getattr(sm, "matches_queue_user", None)
+                    if matches_method and callable(matches_method):
+                        for s in all_singers_list:
+                            try:
+                                if bool(matches_method(s, str(user) or "")):
+                                    # User novo combina com nome/alias de Singer cadastrado.
+                                    # Nao eh conflito, eh o proprio cantor.
+                                    return (False, "", self._parse_mesa_and_singer(user)[0])
+                            except Exception:
+                                continue
+            except Exception:
+                pass
+
         mesa_nova, singer_nova = self._parse_mesa_and_singer(user)
         if not singer_nova or singer_nova in {"", "global", "pikaraoke", "randomizer", "admin", "operador"}:
             return (False, "", mesa_nova)
@@ -544,6 +577,13 @@ class QueueManager:
 
         Matching: usa singer_manager.matches_queue_user(singer, user_str) para considerar
         nome normalizado OU apelidos (aliases) cadastrados.
+
+        LOG DETALHADO: Se não encontrar nenhuma música do cantor, loga no journal (WARNING)
+        EXATAMENTE qual era o nome/aliases do cantor e quais eram TODOS os users da fila
+        naquele momento. Isso é o debug mais importante para o operador quando o sistema
+        TRAVA e ele acha que já adicionou música: 99% dos casos é nome na fila diferente
+        do nome do cantor (ex: "Simone Silva" na fila vs "Simone" no card → operador esqueceu
+        de linkar alias).
         """
         if singer is None:
             return None
@@ -552,8 +592,17 @@ class QueueManager:
         sm = getattr(self, "_singer_manager", None)
         if sm is None:
             return None
+        singer_name = ""
+        singer_aliases: list[str] = []
+        try:
+            singer_name = str(getattr(singer, "name", ""))
+            singer_aliases = list(getattr(singer, "aliases", []) or [])
+        except Exception:
+            pass
+        todos_users_fila: list[tuple[int, str]] = []
         for idx, it in enumerate(self.queue):
             user_str = it.get("user", "")
+            todos_users_fila.append((idx, str(user_str)))
             if sm.matches_queue_user(singer, str(user_str)):
                 song = self.queue.pop(idx)
                 self.ensure_item_qid(song)
@@ -561,11 +610,50 @@ class QueueManager:
                 self._round_seen_user_keys.add(self._last_popped_user_key)
                 logging.info(
                     "[LEI SAGRADA] Popped song FORCADO para o cantor da vez (ordem chegada): "
-                    "user=%s title=%s",
+                    "singer_name=%s singer_id=%s user_fila=%s idx=%s title=%s",
+                    singer_name or "?",
+                    str(getattr(singer, "singer_id", "?")),
                     str(song.get("user", "")),
+                    idx,
                     str(song.get("title", ""))[:120],
                 )
                 return song
+        # Nao encontrou nenhuma musica do cantor na fila. Log detalhado para operador.
+        norm_pairs: list[str] = []
+        for idx, u in todos_users_fila[:30]:
+            try:
+                from .singer_manager import _normalize_name
+                u_norm = _normalize_name(u) if u else ""
+            except Exception:
+                u_norm = ""
+            norm_pairs.append(f"  #{idx+1} user={u!r} norm={u_norm!r}")
+        norm_singer_name = ""
+        try:
+            from .singer_manager import _normalize_name
+            norm_singer_name = _normalize_name(singer_name) if singer_name else ""
+        except Exception:
+            pass
+        log_msg = (
+            "[LEI SAGRADA BLOQUEIO DE TALVEZ SEM MÚSICA?] pop_next_only_for_singer() "
+            "NÃO ENCONTROU NENHUMA MÚSICA do cantor na fila. "
+            "singer_name=%r singer_id=%s singer_norm=%r aliases=%r. "
+            "Total de itens na fila=%d. Primeiros 30 users da fila (para voce comparar nomes/aliases e linkar se faltou alias):\n%s"
+        )
+        args = (
+            singer_name,
+            str(getattr(singer, "singer_id", "?")),
+            norm_singer_name,
+            singer_aliases,
+            len(todos_users_fila),
+            ("\n".join(norm_pairs) if norm_pairs else "  (vazia)"),
+        )
+        # Se a fila NAO ESTA VAZIA MAS nao encontrou musica desse cantor: logging.WARNING
+        # pq provavelmente falta alias (operador errou nome na hora de adicionar a musica).
+        # Se a fila realmente esta vazia: DEBUG soh.
+        if todos_users_fila:
+            logging.warning(log_msg, *args)
+        else:
+            logging.debug(log_msg, *args)
         return None
 
     def queue_edit(self, song_path: str, action: str) -> bool:
