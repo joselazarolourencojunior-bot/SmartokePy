@@ -7,7 +7,9 @@ and fair queue algorithm.
 from __future__ import annotations
 
 import logging
+import os
 import random
+import uuid
 from typing import Any, Callable
 
 from flask_babel import _
@@ -35,6 +37,74 @@ class QueueManager:
         self._get_available_songs = get_available_songs
         self._last_popped_user_key: str | None = None
         self._round_seen_user_keys: set[str] = set()
+
+    @staticmethod
+    def validate_song_file_exists(song_path: str) -> tuple[bool, str, str | None]:
+        """VALIDACAO DE ORIGEM (V9 BLOQUEIO NA FILA).
+
+        NUNCA deixa arquivo inexistente entrar na fila. O USUARIO TEM RAZAO:
+        se for pular depois, pior. Bloqueia AGORA na hora de enfileirar.
+
+        Returns:
+            (sucesso, mensagem_usuario, resolved_path_or_None)
+        """
+        if not song_path or not isinstance(song_path, str):
+            return False, "Caminho da música está vazio ou inválido.", None
+        candidate = song_path.strip()
+        # Tenta 1: caminho exato (frontend pode mandar caminho absoluto)
+        if os.path.isfile(candidate):
+            return True, "", os.path.abspath(candidate)
+        # Tenta 2: resolve sem esquecer de URL decoded (%20 etc)
+        try:
+            import urllib.parse as _up
+            un = _up.unquote(candidate)
+            if un != candidate and os.path.isfile(un):
+                return True, "", os.path.abspath(un)
+            candidate2 = un
+        except Exception:
+            candidate2 = candidate
+        if os.path.isfile(candidate2):
+            return True, "", os.path.abspath(candidate2)
+        # Tenta 3: ~ expansao home + absoluto relativo cwd
+        try:
+            expanded = os.path.expanduser(candidate2)
+            if expanded != candidate2 and os.path.isfile(expanded):
+                return True, "", os.path.abspath(expanded)
+        except Exception:
+            pass
+        # Falhou: bloqueia NA ORIGEM
+        try:
+            title_candidate = os.path.basename(candidate2) or candidate2
+        except Exception:
+            title_candidate = candidate2 or "?"
+        msg = (
+            f"ERRO: Arquivo da música NÃO FOI ENCONTRADO no servidor Dell. "
+            f"Não é possível colocar na fila o que não existe para tocar. "
+            f"Arquivo: '{title_candidate}'  (caminho solicitado: {song_path!r}). "
+            f"Verifique se o arquivo não foi apagado do diretório songs/ ou downloads/. "
+            f"Se era YouTube, o download provavelmente falhou ou cancelou."
+        )
+        logging.error(
+            "[VALIDAÇÃO V9 NA FILA] BLOQUEADO enqueue - arquivo NÃO EXISTE. "
+            "song_path=%s  candidate2=%s  exists=%s",
+            song_path, candidate2, os.path.exists(candidate2),
+        )
+        return False, msg, None
+
+    @staticmethod
+    def _new_qid() -> str:
+        """Gera ID unico curto (10 chars hex) para identificar item da fila."""
+        return uuid.uuid4().hex[:10]
+
+    @staticmethod
+    def ensure_item_qid(item: dict[str, Any]) -> str:
+        """Garante que um item da fila tem 'qid' (caso existam itens antigos sem)."""
+        existing = item.get("qid")
+        if isinstance(existing, str) and existing:
+            return existing
+        new_qid = QueueManager._new_qid()
+        item["qid"] = new_qid
+        return new_qid
 
     def _user_key(self, user: str) -> str:
         return " ".join(user.split()).casefold()
@@ -88,13 +158,23 @@ class QueueManager:
         return (mesa.casefold(), singer_out.casefold())
 
     def is_singer_name_already_in_same_mesa(self, user: str) -> tuple[bool, str, str]:
-        """Verifica se ja existe outro cantor com MESMO NOME na MESMA MESA (na fila ou tocando agora).
+        """Verifica se ja existe OUTRO cantor DIFERENTE com MESMO NOME na MESMA MESA (na fila
+        ou tocando agora).
+
+        IMPORTANTE (regra do Junior poder adicionar 10 musicas):
+          - NAO BLOQUEIA se for O MESMO USUARIO (mesma key normalizada) — afinal e o MESMO cantor
+            querendo adicionar varias musicas (Junior adicionar musica #1, #2, ..., #10 = OK).
+          - SO BLOQUEIA quando aparece OUTRO usuario (key normalizada DIFERENTE) mas MESMA combinacao
+            mesa + nome normalizado (evita 2 pessoas diferentes com apelidos colidindo, ex: duas
+            pessoas querendo usar "Mesa 3" ao mesmo tempo, ou dois clientes com "Junior" como nome).
 
         Returns: (conflict: bool, conflicting_user_display: str, conflicting_mesa: str)
         """
         mesa_nova, singer_nova = self._parse_mesa_and_singer(user)
         if not singer_nova or singer_nova in {"", "global", "pikaraoke", "randomizer", "admin", "operador"}:
             return (False, "", mesa_nova)
+        # Key normalizada do usuario que esta tentando adicionar agora (MESMO user = mesmo cantor)
+        self_user_key = self._user_key(user)
         now_playing_user = self._get_now_playing_user() if self._get_now_playing_user else None
         all_users = [now_playing_user] if now_playing_user else []
         all_users += [item.get("user") for item in self.queue if item.get("user")]
@@ -102,12 +182,15 @@ class QueueManager:
         for other_user in all_users:
             if other_user is None:
                 continue
+            # 🔑 CHAVE DO BUG: se for EXATAMENTE o MESMO usuario (mesma key) = MESMO CANTOR
+            #    (Junior adicionando a musica #2, #3 ... #10) => LIBERADO, pula.
+            other_key = self._user_key(other_user)
+            if self_user_key and other_key and self_user_key == other_key:
+                continue
             m_out, s_out = self._parse_mesa_and_singer(other_user)
             if not s_out:
                 continue
-            # Bloqueia SEMPRE que (mesa normalizada + nome normalizado) coincida
-            # Nao importa se eh a mesma string user ou outra pessoa com mesmo nome na mesa
-            # ou mesmo user repetindo (deve escolher outro nome, p ex "Carlos Silva" ou "Carlos #2")
+            # Bloqueia SOMENTE se for OUTRO usuario (key diferente acima) com (mesa + nome normalizado) igual
             if m_out == mesa_nova and s_out == singer_nova:
                 return (True, other_user, mesa_nova)
         return (False, "", mesa_nova)
@@ -134,9 +217,19 @@ class QueueManager:
         return False
 
     def is_user_limited(self, user: str) -> bool:
-        """Check if a user has reached their queue limit."""
-        limit = self._preferences.get_or_default("limit_user_songs_by")
-        if limit == 0 or user in ("Pikaraoke", "Randomizer"):
+        """Check if a user has reached their queue limit.
+        GARANTIA 100%: se limit = 0, NAO, NUNCA limita (default PreferenceManager DEFAULTS = 0).
+        Tambem trata configuracoes corrompidas/invalidas (str vazia / None / negativos / nao numerico)
+        como 0 = ilimitado (nunca mais bloqueia por este motivo).
+        """
+        raw_limit = self._preferences.get_or_default("limit_user_songs_by")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else 0
+        except (ValueError, TypeError):
+            limit = 0
+        if limit <= 0:
+            return False
+        if not user or user in ("Pikaraoke", "Randomizer"):
             return False
 
         now_playing_user = self._get_now_playing_user() if self._get_now_playing_user else None
@@ -144,7 +237,7 @@ class QueueManager:
         count = sum(1 for item in self.queue if self._user_key(item["user"]) == user_key) + (
             1 if now_playing_user and self._user_key(now_playing_user) == user_key else 0
         )
-        return count >= int(limit)
+        return count >= limit
 
     def _resolve_title(self, song_path: str) -> str:
         """Get a display title from a song path."""
@@ -198,6 +291,28 @@ class QueueManager:
         log_action: bool = True,
     ) -> list[bool | str]:
         """Add a song to the queue. Returns [success, message]."""
+        # ====== [V9 BLOQUEIO NA ORIGEM - USUARIO TEM RAZAO] ======
+        # Arquivo NAO EXISTE nao pode entrar na fila.
+        # "se nao existe como foi para a fila? como permitiu ser add a fila?"
+        ok_exists, fail_msg, resolved_song_path = QueueManager.validate_song_file_exists(song_path)
+        if not ok_exists:
+            logging.warning(
+                "[ENQUEUE V9 BLOQUEADO] arquivo nao existe no disco. user=%s path=%s",
+                user, song_path,
+            )
+            try:
+                self._events.emit(
+                    "notification",
+                    fail_msg,
+                    "danger",
+                )
+            except Exception:
+                pass
+            return [False, fail_msg]
+        # Se o validador resolveu caminho com unquote/expanduser, usa ele resolvido p/ armazenar
+        if resolved_song_path:
+            song_path = resolved_song_path
+
         title = self._resolve_title(song_path)
 
         # REGRA NOVA: APENAS MESMO USUARIO + MESMA MUSICA + AINDA NA FILA (nao cantou ainda) -> BLOQUEIA
@@ -246,6 +361,7 @@ class QueueManager:
             ]
 
         queue_item = {
+            "qid": self._new_qid(),
             "user": user,
             "file": song_path,
             "title": title,
@@ -376,6 +492,7 @@ class QueueManager:
 
         if not self._preferences.get_or_default("enable_fair_queue"):
             song = self.queue.pop(0)
+            self.ensure_item_qid(song)
             self._last_popped_user_key = self._user_key(song["user"])
             self._round_seen_user_keys = {self._last_popped_user_key}
             logging.info(f"Popped song from queue: {song['title']}")
@@ -411,6 +528,7 @@ class QueueManager:
             candidate_index = 0
 
         song = self.queue.pop(candidate_index)
+        self.ensure_item_qid(song)
         self._last_popped_user_key = self._user_key(song["user"])
         self._round_seen_user_keys.add(self._last_popped_user_key)
         logging.info(f"Popped song from queue: {song['title']}")

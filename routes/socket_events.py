@@ -48,9 +48,17 @@ def setup_socket_events(socketio):
             )
 
             if ended_early:
-                if ffmpeg_running:
+                is_startup_failure = (position is not None and position < 5.0) or (
+                    reason == "failed to start"
+                )
+                if ffmpeg_running or is_startup_failure:
+                    msg = (
+                        "Splash client ended early (startup failure, will retry). "
+                        if is_startup_failure
+                        else "Splash client ended early but FFmpeg is still running. "
+                    )
                     logging.warning(
-                        "Splash client ended early but FFmpeg is still running. "
+                        msg +
                         f"Requesting client reload: position={position:.2f}s "
                         f"duration={duration:.2f}s payload={dict(payload)}"
                     )
@@ -76,7 +84,7 @@ def setup_socket_events(socketio):
     def start_song() -> None:
         """Handle start_song WebSocket event when playback begins."""
         k = get_karaoke_instance()
-        k.playback_controller.start_song()
+        k.playback_controller.start_song(stream_id_marker=f"ws-{request.sid}")
 
     @socketio.on("clear_notification")
     def clear_notification() -> None:

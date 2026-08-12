@@ -72,6 +72,218 @@
     }
 
     /**
+     * SmartokePy — DROPDOWN estilo datalist busca musica (abaixo/abaixo do elemento)
+     * Mostra SOMENTE NOMES JA CADASTRADOS MANUALMENTE (nao nomes que vieram da fila).
+     * Cabecalho + linhas clicaveis. Clique = seleciona. Clica fora = fecha.
+     * Rodape SEMPRE tem INPUT TEXT + botao Confirmar (nunca depende de prompt()).
+     */
+    function openSingersDropdown(anchorEl, onSelectFn) {
+        // 1) Fecha dropdown anterior se existir
+        try {
+            var old = document.getElementById("__singersDropdownBox");
+            if (old) old.parentNode.removeChild(old);
+        } catch (_) {}
+        function closeDropdown() {
+            try {
+                var el = document.getElementById("__singersDropdownBox");
+                if (el) el.parentNode.removeChild(el);
+            } catch (_) {}
+            try { document.removeEventListener("click", outsideClick); } catch (_) {}
+            try { document.removeEventListener("keydown", escPress); } catch (_) {}
+        }
+        function outsideClick(evt) {
+            try {
+                var b = document.getElementById("__singersDropdownBox");
+                if (!b) return;
+                var tgt = evt.target;
+                if (tgt && (tgt === anchorEl || b.contains(tgt) || anchorEl.contains(tgt))) return;
+                closeDropdown();
+            } catch (_) {}
+        }
+        function escPress(evt) { if (evt.keyCode === 27) closeDropdown(); }
+
+        function applySelect(nomeFinal) {
+            if (nomeFinal === undefined || nomeFinal === null) return;
+            nomeFinal = String(nomeFinal).replace(/^\s+|\s+$/g, "");
+            if (nomeFinal === "") return;
+            closeDropdown();
+            if (onSelectFn) onSelectFn(nomeFinal);
+        }
+
+        // 2) Cria box
+        function buildBox(items /* [{name, label, isAlias}] */) {
+            var temItens = items && items.length > 0;
+            var rect = anchorEl.getBoundingClientRect();
+            var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+            var box = document.createElement("div");
+            box.id = "__singersDropdownBox";
+            box.style.cssText = "position:absolute;z-index:99999;background-color:#ffffff;color:#0f172a;border:1px solid #334155;border-radius:6px;box-shadow:0 8px 26px rgba(0,0,0,.55);min-width:300px;max-width:92vw;max-height:62vh;overflow-y:auto;overflow-x:hidden;";
+            var left = Math.max(6, Math.min((rect.left + scrollLeft) - 4, (scrollLeft + document.documentElement.clientWidth) - 310));
+            var bottomGap = document.documentElement.clientHeight - rect.bottom;
+            var dropHeight = 520;
+            var top;
+            if (bottomGap < 180 && rect.top > 200) {
+                top = (rect.top + scrollTop) - dropHeight - 4;
+                top = Math.max(scrollTop + 2, top);
+            } else {
+                top = (rect.bottom + scrollTop) + 4;
+            }
+            box.style.left = left + "px";
+            box.style.top = top + "px";
+
+            // Cabecalho estilo "Available songs..." como busca musica Toto
+            var head = document.createElement("div");
+            head.style.cssText = "padding:10px 14px;border-bottom:1px solid #e2e8f0;font-weight:700;font-size:13.5px;color:#1e293b;background-color:#f8fafc;letter-spacing:.2px;";
+            head.textContent = "Cantores cadastrados manualmente";
+            box.appendChild(head);
+
+            if (temItens) {
+                items.forEach(function (it) {
+                    var row = document.createElement("div");
+                    row.setAttribute("data-name", it.name);
+                    row.style.cssText = "padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;font-size:14.5px;color:#0f172a;display:flex;align-items:center;gap:8px;-webkit-user-select:none;user-select:none;";
+                    var icone = document.createElement("span");
+                    icone.style.cssText = "font-weight:700;font-size:14px;";
+                    icone.textContent = it.isAlias ? "🔗" : "👤";
+                    icone.style.color = it.isAlias ? "#0ea5e9" : "#334155";
+                    row.appendChild(icone);
+                    var txt = document.createElement("span");
+                    txt.textContent = it.label;
+                    txt.style.flex = "1 1 auto";
+                    row.appendChild(txt);
+                    row.addEventListener("mouseenter", function(){ row.style.backgroundColor = "#eff6ff"; row.style.color = "#1e3a8a"; });
+                    row.addEventListener("mouseleave", function(){ row.style.backgroundColor = ""; row.style.color = "#0f172a"; });
+                    row.addEventListener("click", function (ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        applySelect(row.getAttribute("data-name"));
+                    });
+                    box.appendChild(row);
+                });
+            } else {
+                // Sem cadastrados: mensagem clara
+                var empty = document.createElement("div");
+                empty.style.cssText = "padding:14px 14px;border-bottom:1px solid #f1f5f9;background-color:#fffbeb;color:#78350f;font-size:13.5px;line-height:1.4;";
+                var e1 = document.createElement("div"); e1.style.cssText = "font-weight:700;margin-bottom:4px;"; e1.textContent = "⚠️ Nenhum cantor cadastrado ainda.";
+                var e2 = document.createElement("div"); e2.textContent = "Abra a aba CANTORES para cadastrar, OU digite um nome abaixo no campo e clique Confirmar.";
+                empty.appendChild(e1); empty.appendChild(e2);
+                box.appendChild(empty);
+            }
+
+            // Rodapé: INPUT TEXT + Botao Confirmar (NUNCA MAIS depende de prompt())
+            var foot = document.createElement("div");
+            foot.style.cssText = "padding:10px 12px;background-color:#f8fafc;border-top:1px solid #e2e8f0;display:flex;gap:6px;align-items:center;";
+            var inp = document.createElement("input");
+            inp.type = "text";
+            inp.placeholder = "👉 Ou digite um nome aqui...";
+            inp.className = "input is-small";
+            inp.style.cssText = "flex:1 1 auto;";
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "button is-info is-small";
+            btn.textContent = "Confirmar";
+            function doFootConfirm() {
+                var val = (inp.value || "").trim();
+                if (val === "") { inp.focus(); return; }
+                applySelect(val);
+            }
+            btn.addEventListener("click", function (ev) { ev.preventDefault(); ev.stopPropagation(); doFootConfirm(); });
+            inp.addEventListener("keydown", function (ev) {
+                if (ev.keyCode === 13) { ev.preventDefault(); ev.stopPropagation(); doFootConfirm(); }
+            });
+            foot.appendChild(inp);
+            foot.appendChild(btn);
+            box.appendChild(foot);
+
+            document.body.appendChild(box);
+            // Foca no input automaticamente para facilitar
+            setTimeout(function(){ try { inp.focus(); } catch(_){} }, 50);
+
+            setTimeout(function () {
+                document.addEventListener("click", outsideClick);
+                document.addEventListener("keydown", escPress);
+            }, 0);
+        }
+
+        // Carrega os cadastrados manualmente (registered_singers, NAO unmatched)
+        var registered;
+        try {
+            var now = Date.now();
+            if (window.__SINGERS_CACHE && window.__SINGERS_CACHE.registered_singers &&
+                (now - window.__SINGERS_CACHE.ts) < 15000) {
+                registered = window.__SINGERS_CACHE.registered_singers;
+            }
+        } catch (_) { registered = null; }
+
+        function buildFromRegistered(reg) {
+            var items = [];
+            if (Array.isArray(reg)) {
+                reg.forEach(function (s) {
+                    if (!s) return;
+                    if (s.name) items.push({ name: String(s.name), label: String(s.name), isAlias: false });
+                    if (Array.isArray(s.aliases_display)) {
+                        s.aliases_display.forEach(function (al) {
+                            if (al) items.push({ name: String(al), label: String(al), isAlias: true });
+                        });
+                    } else if (Array.isArray(s.aliases)) {
+                        s.aliases.forEach(function (al) {
+                            if (al) items.push({ name: String(al), label: String(al), isAlias: true });
+                        });
+                    }
+                });
+            }
+            buildBox(items);
+        }
+
+        if (registered) {
+            buildFromRegistered(registered);
+            return;
+        }
+
+        // Fetch async
+        var endpoint = "/api/singers/picker_options";
+        var fallback = "/api/singers";
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", endpoint, true);
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.timeout = 10000;
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) return;
+            if (xhr.status === 200) {
+                try {
+                    var j = JSON.parse(xhr.responseText);
+                    var reg = j.registered_singers;
+                    window.__SINGERS_CACHE = { ts: Date.now(), registered_singers: reg || [] };
+                    if (Array.isArray(reg)) { buildFromRegistered(reg); return; }
+                } catch (_) {}
+            }
+            // fallback: /api/singers
+            var f2 = new XMLHttpRequest();
+            f2.open("GET", fallback, true);
+            f2.setRequestHeader("Accept", "application/json");
+            f2.onreadystatechange = function () {
+                if (f2.readyState !== 4) return;
+                if (f2.status === 200) {
+                    try {
+                        var jj = JSON.parse(f2.responseText);
+                        var list = Array.isArray(jj) ? jj : (jj.singers || jj.list || []);
+                        window.__SINGERS_CACHE = { ts: Date.now(), registered_singers: list };
+                        buildFromRegistered(list);
+                        return;
+                    } catch (_) {}
+                }
+                // Qualquer erro: monta box VAZIO (usuario ainda consegue digitar no input do footer)
+                buildFromRegistered([]);
+            };
+            f2.send();
+        };
+        xhr.send();
+    }
+    // Expor globalmente para fallback/teste
+    try { window.openSingersDropdown = openSingersDropdown; } catch (_) {}
+
+    /**
      * Initialize username change handler with event delegation
      * This ensures it works reliably across all page transitions
      */
@@ -82,24 +294,29 @@
         // Bind with event delegation
         $(document).on('click', '#current-user', function(e) {
             e.preventDefault();
-            // Get the current name from the cookie dynamically
-            let currentName = Cookies.get("user");
-            var promptMsg = (window.translations && window.translations.promptChangeUsername)
-                ? window.translations.promptChangeUsername.replace('CURRENT_NAME', currentName)
-                : "Do you want to change the name of the person using this device? This will show up on queued songs. Current: " + currentName;
-            let name = window.prompt(promptMsg);
-            // Only update if user clicked OK and entered a non-empty name
-            // null = Cancel clicked, "" = OK with empty input
-            if (name !== null && name.trim() !== "") {
-                Cookies.set("user", name, { expires: 3650, path: '/' });
-                if (typeof window.updateCurrentUserDisplay === "function") {
-                    window.updateCurrentUserDisplay(name);
-                } else {
-                    $("#current-user span").text(name);
+            e.stopPropagation();
+            let anchor = this;
+            try {
+                openSingersDropdown(anchor, function(finalName) {
+                    if (finalName === undefined || finalName === null || String(finalName).trim() === "") return;
+                    Cookies.set("user", String(finalName).trim(), { expires: 3650, path: '/' });
+                    if (typeof window.updateCurrentUserDisplay === "function") {
+                        window.updateCurrentUserDisplay(String(finalName).trim());
+                    } else {
+                        $("#current-user span").text(String(finalName).trim());
+                        $("#current-user").removeClass("is-hidden");
+                    }
+                });
+            } catch (err) {
+                let currentName = Cookies.get("user") || "";
+                let nm = window.prompt("Quem esta usando esse dispositivo? Digite o nome.\nAtual: " + currentName);
+                if (nm !== null && nm.trim() !== "") {
+                    Cookies.set("user", nm, { expires: 3650, path: '/' });
+                    if (typeof window.updateCurrentUserDisplay === "function") window.updateCurrentUserDisplay(nm);
+                    else { $("#current-user span").text(nm); $("#current-user").removeClass("is-hidden"); }
                 }
             }
-            // Remove focus from the link to prevent CSS focus styling (black background)
-            $(this).blur();
+            try { $(this).blur(); } catch (_) {}
         });
     }
 
@@ -206,11 +423,42 @@
         });
 
         // Add random songs to queue
+        // SmartokePy: Usa a nova rota /queue/addrandom_api/N que retorna JSON {ok:true, added:N}
+        // SEM redirect 302 full page HTML, evita "Conexão perdida" (SocketIO disconnectava
+        // quando SPA hijack pegava redirect para /queue e recarregava DOM inteiro).
         $(document).on('click', '.add-random', function(e) {
             e.preventDefault();
-            const amount = $('#randomNumberInput').val();
-            const baseUrl = '/queue/addrandom';
-            $.get(`${baseUrl}/${amount}`);
+            var raw = $('#randomNumberInput').val();
+            var amount = parseInt(String(raw || "3").replace(/\D/g,''), 10);
+            if (!amount || amount < 1) amount = 3;
+            if (amount > 999) amount = 999;
+            var btn = this;
+            if (btn) {
+                try {
+                    btn.style.opacity = '0.4';
+                    btn.style.pointerEvents = 'none';
+                    setTimeout(function(){ try{btn.style.opacity='1'; btn.style.pointerEvents='auto';}catch(_){} }, 1200);
+                } catch(_){}
+            }
+            $.get('/queue/addrandom_api/' + amount)
+                .always(function(data){
+                    try {
+                        var j = (typeof data === "string") ? JSON.parse(data) : data;
+                        if (j && typeof window.showNotification === "function") {
+                            if (j.ok) {
+                                window.showNotification(j.message || ("Adicionadas " + (j.added||amount) + " músicas aleatórias."), "is-success", 3000);
+                            } else if (j.ran_out) {
+                                window.showNotification(j.error || "Acabaram as músicas!", "is-warning", 3500);
+                            } else {
+                                window.showNotification(j.error || "Erro ao adicionar músicas aleatórias.", "is-danger", 4000);
+                            }
+                        }
+                    } catch(e) {
+                        if (typeof window.showNotification === "function") {
+                            try { window.showNotification("Músicas aleatórias adicionadas.", "is-success", 2500); } catch(_){}
+                        }
+                    }
+                });
         });
     }
 

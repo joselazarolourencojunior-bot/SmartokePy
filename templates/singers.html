@@ -1,0 +1,802 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  /* ====== ABA CANTORES - FASE1 + FASE2 (AMARRACAO FILA REAL) ====== */
+  .singers-wrap { max-width: 1100px; margin: 10px auto 30px auto; padding: 0 10px; }
+  .singers-header { display:flex; justify-content:space-between; align-items:center;
+                     flex-wrap:wrap; gap: 10px; margin-bottom: 14px; }
+  .singers-title { font-size: 1.45rem; font-weight: 700; color:#e8eefc; }
+  .singers-subtitle { font-size: .86rem; color: #93a1bf; margin-top: -4px; }
+  .singers-add { background: #111930; border:1px solid #1f2a4a; border-radius:10px;
+                  padding: 12px 14px; margin-bottom: 16px; }
+  .singers-add .field { margin-bottom: 8px; }
+  .singers-list .card { background:#0e1528; border:1px solid #1b2544; border-radius:10px;
+                        margin-bottom: 10px; transition: all .18s ease; position:relative; }
+  .singers-list .card:hover { border-color:#2b3c74; }
+  /* ===== FASE2: destaques NOW PLAYING / PROXIMO ===== */
+  .singers-list .card.card-now-playing {
+    background: linear-gradient(90deg, rgba(8,145,178,0.22), rgba(190,24,93,0.18));
+    border: 2px solid #06b6d4 !important;
+    box-shadow: 0 0 0 3px rgba(6,182,212,.18), 0 10px 30px rgba(6,182,212,.15);
+    animation: now-glow 1.8s ease-in-out infinite;
+  }
+  @keyframes now-glow {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(6,182,212,.18), 0 10px 30px rgba(6,182,212,.15); }
+    50%      { box-shadow: 0 0 0 5px rgba(6,182,212,.30), 0 10px 30px rgba(6,182,212,.25); }
+  }
+  .singers-list .card.card-next-singer {
+    background: linear-gradient(90deg, rgba(59,130,246,0.20), rgba(16,185,129,0.12));
+    border: 2px solid #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59,130,246,.16);
+  }
+  .singers-badge-now { position:absolute; top:-10px; left:14px; padding:3px 10px;
+                        background:#06b6d4; color:#fff; font-weight:800; font-size:.76rem;
+                        border-radius:999px; z-index:5; box-shadow: 0 4px 14px rgba(6,182,212,.5); }
+  .singers-badge-next { position:absolute; top:-10px; left:120px; padding:3px 10px;
+                         background:#3b82f6; color:#fff; font-weight:800; font-size:.76rem;
+                         border-radius:999px; z-index:5; box-shadow: 0 4px 14px rgba(59,130,246,.45); }
+  /* ===== Banners super chamativos ===== */
+  .singers-now-banner { margin-bottom: 14px; padding: 14px 18px; border-radius: 12px;
+                         color:#fff; font-weight: 800; font-size: 1.08rem;
+                         background: linear-gradient(90deg,#0e7490,#be185d);
+                         box-shadow: 0 10px 30px rgba(190,24,93,.35);
+                         display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .singers-now-banner .mic { font-size:1.9rem; animation: now-glow 1.2s infinite; }
+  .singers-now-banner small { opacity:.9; font-weight:600; display:block; margin-top:2px; }
+  .singers-next-banner { margin-bottom: 14px; padding: 12px 18px; border-radius: 12px;
+                         color:#fff; font-weight: 700;
+                         background: linear-gradient(90deg,#1e40af,#059669);
+                         box-shadow: 0 8px 22px rgba(16,185,129,.25); }
+  .singers-next-banner .arrow { font-size:1.3rem; }
+  .singers-unmatched-banner { margin-bottom: 14px; padding: 10px 14px; border-radius: 10px;
+                               background:#1f2937; color:#fcd34d; border:1px solid #92400e; }
+  .singers-unmatched-banner .pill { display:inline-block; padding:4px 9px; border-radius:999px;
+                                     background:#78350f; color:#fde68a; margin:3px 4px 3px 0;
+                                     cursor:pointer; font-weight:700; font-size:.78rem; }
+  .singers-unmatched-banner .pill:hover { background:#a16207; }
+  .singers-row { display: flex; gap: 12px; align-items: center; padding: 12px 14px; }
+  .singers-order { width: 52px; text-align: center; flex-shrink:0; }
+  .singers-order .ord { font-size: 1.7rem; font-weight: 900; color:#7aa2ff; line-height:1; }
+  .singers-order .arr { font-size: .72rem; color:#8ea1c9; margin-top: 4px; }
+  .singers-status-dot { width: 16px; height: 16px; border-radius: 50%; flex-shrink:0;
+                         box-shadow: 0 0 0 3px rgba(0,0,0,.18); }
+  .singers-status-dot.pending_music { animation: led-pulse 1.0s infinite; }
+  @keyframes led-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: .45; transform: scale(0.82); }
+  }
+  .singers-info { flex: 1 1 auto; min-width: 0; }
+  .singers-name { font-size: 1.05rem; font-weight: 700; color:#e8eefc;
+                   white-space: nowrap; overflow:hidden; text-overflow: ellipsis; }
+  .singers-meta { font-size: .78rem; color:#93a1bf; display:flex; flex-wrap:wrap;
+                  gap: 10px; margin-top: 3px; }
+  .singers-aliases { margin-top: 6px; display:flex; gap:4px; flex-wrap:wrap; }
+  .singers-aliases .alias { background:#223063; color:#c7d2fe; padding:2px 8px; border-radius:999px;
+                            font-size:.7rem; }
+  .singers-aliases .alias .x { margin-left: 4px; cursor:pointer; color:#fca5a5; font-weight:800; }
+  .singers-note { font-size: .82rem; color:#c8d2ea; background:#101a36;
+                  padding: 6px 9px; border-radius: 6px; margin-top: 6px;
+                  border-left: 3px solid #3b5bdb; }
+  .singers-actions { display:flex; flex-wrap: wrap; gap: 5px; flex-shrink:0;
+                     justify-content:flex-end; max-width: 620px; }
+  .singers-actions button { font-size: .72rem !important; padding: 4px 9px !important;
+                            height: auto !important; line-height: 1.1 !important; }
+  .singers-stats { display:flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .singers-stats .tag { font-size:.78rem; padding: 3px 8px; border-radius:999px;
+                         color:#fff; }
+  /* ===== Banners para cantores sem musica (dois separados) ===== */
+  /* (A) BANNER URGENTE! Proximo da vez SEM MUSICA. Piscada intensa RAPIDA. */
+  .singers-urgent-next-banner { background:linear-gradient(90deg,#7f1d1d,#dc2626);
+                                 color:#fff; padding: 12px 16px; border-radius: 10px;
+                                 margin-bottom: 12px; font-weight: 800;
+                                 box-shadow: 0 0 0 3px rgba(220,38,38,.25), 0 8px 25px rgba(220,38,38,.35);
+                                 animation: urgent-blink 0.55s ease-in-out infinite; }
+  @keyframes urgent-blink {
+    0%, 100% { filter: brightness(1);   box-shadow: 0 0 0 3px rgba(220,38,38,.25), 0 8px 25px rgba(220,38,38,.35); }
+    50%      { filter: brightness(1.7); box-shadow: 0 0 0 5px rgba(248,113,113,.55), 0 10px 35px rgba(248,113,113,.55); }
+  }
+  .singers-urgent-next-banner .warn { font-size:1.3rem; margin-right:8px; }
+  /* (B) BANNER LEMBRETE NORMAL (amarelo, SEM PISCAR). Para quem AINDA NAO EH a vez. */
+  .singers-remind-music-banner { background:#1f2937; color:#fcd34d;
+                                  border:1px solid #92400e; border-radius: 10px;
+                                  padding: 10px 14px; margin-bottom: 12px; font-weight: 700; }
+  .singers-remind-music-banner .bell { margin-right: 6px; }
+  /* Card do PROXIMO que esta SEM MUSICA: borda vermelha piscando tambem no card. */
+  .singers-list .card.card-next-needs-music-urgent {
+    animation: urgent-card-pulse 0.6s ease-in-out infinite !important;
+    border-color: #ef4444 !important;
+  }
+  @keyframes urgent-card-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(239,68,68,.25); }
+    50%      { box-shadow: 0 0 0 6px rgba(248,113,113,.55); }
+  }
+  .singers-empty { padding: 40px 20px; text-align: center; color:#7a8aae;
+                    border: 2px dashed #22315c; border-radius: 10px; }
+  .singers-empty .icon { font-size: 3.2rem; opacity: .6; }
+  .singers-empty .txt { margin-top: 10px; font-weight: 600; }
+  .singers-empty .sub { font-size: .82rem; opacity: .8; }
+  @media (max-width: 720px) {
+    .singers-row { flex-wrap: wrap; }
+    .singers-actions { width: 100%; justify-content: flex-start; }
+  }
+</style>
+
+<div class="singers-wrap">
+  <div class="singers-header">
+    <div>
+      <div class="singers-title">🎤 Cantores (Ordem de Chegada)</div>
+    </div>
+    <div class="buttons">
+      <button id="btn-refresh" class="button is-info is-outlined is-small">
+        <i class="icon icon-arrows-ccw" aria-hidden="true"></i>&nbsp;Atualizar
+      </button>
+      <button id="btn-clear" class="button is-danger is-outlined is-small">
+        <i class="icon icon-trash-empty" aria-hidden="true"></i>&nbsp;Limpar Todos
+      </button>
+    </div>
+  </div>
+
+  <div id="calls-banner"></div>
+
+  <!-- ===== FASE2: BANNERS SUPER CHAMATIVOS (now playing / proximo / nao linkados) ===== -->
+  <div id="now-banner"></div>
+  <div id="next-banner"></div>
+  <div id="unmatched-banner"></div>
+
+  <div class="singers-stats" id="stats-tags"></div>
+
+  <div class="card singers-add">
+    <div class="field is-horizontal is-grouped" style="margin-bottom:0; flex-wrap:wrap;">
+      <div class="control" style="flex: 1 1 220px;">
+        <input id="in-name" class="input" type="text" maxlength="80"
+               placeholder="Nome do cantor (ex: Lazaro, Mulher de rosa, Mesa 3)">
+      </div>
+      <div class="control" style="flex: 1 1 200px;">
+        <input id="in-note" class="input" type="text" maxlength="160"
+               placeholder="Opcional: Anotação (ex: 'Mesa 2 canto direito', 'hóspede da Marina')">
+      </div>
+      <div class="control">
+        <div class="select">
+          <select id="in-status">
+            <option value="pending_music">⚠ SEM MÚSICA AINDA (chamar depois)</option>
+            <option value="waiting">✅ Já tem música na fila</option>
+            <option value="skipping">⏭️ Vai pular esta rodada (comendo)</option>
+            <option value="left_early">❌ Saiu mais cedo (não volta)</option>
+          </select>
+        </div>
+      </div>
+      <div class="control">
+        <button id="btn-add" class="button is-primary">
+          <i class="icon icon-user-plus" aria-hidden="true"></i>&nbsp;Adicionar na Fila de Cantores
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="singers-list" class="singers-list">
+    <div class="singers-empty">
+      <div class="icon"><i class="icon icon-users"></i></div>
+      <div class="txt">Nenhum cantor na lista ainda.</div>
+      <div class="sub">Quando alguém chegar, digite o nome acima e clique em "Adicionar".
+        A ordem de chegada fica gravada.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ======================================================================
+  // GUARD ANTI-REDECLARACAO SPA (o executeScripts roda TODO esse bloco NOVAMENTE
+  // toda vez que voltar p/ aba Cantores SEM F5. A 2a vez daria SyntaxError:
+  // "Identifier 'API' has already been declared" e NADA funcionaria)
+  // ======================================================================
+  if (!window.__SINGERS_MODULE_INITIALIZED){
+    // --- PRIMEIRA EXECUCAO SOMENTE: declarar variaveis UMA UNICA VEZ ---
+    window.__SINGERS_MODULE_INITIALIZED = true;
+
+    window.__SINGERS_API = {
+      list:        "/api/singers",
+      matchStatus: "/api/singers/match_status",
+      add:         "/api/singers/add",
+      upd:         "/api/singers/update",
+      note:        "/api/singers/note",
+      aliases:     "/api/singers/aliases",
+      aliasAdd:    "/api/singers/alias_add",
+      aliasRemove: "/api/singers/alias_remove",
+      remove:      "/api/singers/remove",
+      clear:       "/api/singers/clear",
+    };
+
+    // Estado FASE2 em memoria (nao precisa persistir local, servidor eh a verdade)
+    window.__SINGERS_NOW_SINGER_ID = null;
+    window.__SINGERS_NEXT_SINGER_ID = null;
+    window.__SINGERS_NOW_QUEUE_USER = "";
+    window.__SINGERS_NEXT_QUEUE_USER = "";
+    window.__SINGERS_UNMATCHED = [];
+
+    window.__SINGERS_STATUS_META = {
+      waiting:       { label:"✅ Aguardando vez",              cls:"is-success is-light" },
+      pending_music: { label:"🔔 SEM MÚSICA - chamar agora!",  cls:"is-danger is-light" },
+      skipping:      { label:"⏭️ Pulou esta rodada (comendo)", cls:"is-warning is-light" },
+      left_early:    { label:"❌ Saiu mais cedo",              cls:"is-light" },
+      sung:          { label:"🎵 Já cantou (fim da rodada)",  cls:"is-info is-light" },
+    };
+
+    // ----- Helpers (ficam em window para nao perder de primeira) -----
+    window.__singers_is_on_page = function(){
+      // SOH retorna true se estamos REALMENTE na aba Cantores (tem os elementos dela no DOM).
+      // Sem isso, o setInterval roda mesmo em FILA/HOME e joga erro NOTIFICACAO na PAGINA ERRADA!
+      return !!(document.getElementById("singers-list") && document.getElementById("btn-add"));
+    };
+
+    window.__singers_jsonPost = function(url, data){
+      return fetch(url, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(data||{}),
+        cache:"no-store"
+      }).then(function(r){ return r.json().catch(function(){ return {ok:false,error:"bad json"}; }); });
+    };
+
+    window.__singers_escapeHtml = function(str){
+      return String(str||"").replace(/[&<>"']/g, function(c){
+        return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c];
+      });
+    };
+
+    window.__singers_renderMatchBanners = function(){
+      if (!window.__singers_is_on_page()) return;
+      // ----- NOW BANNER (tocando agora CHAMATIVO GRANDE) -----
+      var now_b = document.getElementById("now-banner");
+      if (now_b){
+        if (window.__SINGERS_NOW_QUEUE_USER){
+          var extra = "";
+          if (window.__SINGERS_NOW_SINGER_ID){
+            // busca nome do cantor na ultima lista (se tem)
+            var singers = (window.__SINGERS_LAST_LIST && window.__SINGERS_LAST_LIST.singers) || [];
+            var s = singers.find(function(x){ return x.singer_id===window.__SINGERS_NOW_SINGER_ID; });
+            if (s){
+              extra = "<small>🎤 Cantor: <strong>" + window.__singers_escapeHtml(s.name) +
+                      "</strong> (como " + window.__singers_escapeHtml(window.__SINGERS_NOW_QUEUE_USER) + " na fila)</small>";
+            } else {
+              extra = "<small>(na fila real: " + window.__singers_escapeHtml(window.__SINGERS_NOW_QUEUE_USER) +
+                      " — nao linkado ainda: clique na sugestao abaixo)</small>";
+            }
+          } else {
+            extra = "<small>(na fila real: " + window.__singers_escapeHtml(window.__SINGERS_NOW_QUEUE_USER) +
+                    " — nao linkado: clique na sugestao abaixo para linkar)</small>";
+          }
+          now_b.innerHTML = '<div class="mic">🎙️🎤🎶</div>' +
+                            '<div>🔴 TOCANDO AGORA — É A VEZ DE: <strong style="font-size:1.2rem">' +
+                            window.__singers_escapeHtml(window.__SINGERS_NOW_QUEUE_USER) +
+                            '</strong><br>' + extra + '</div>';
+          now_b.className = "singers-now-banner";
+        } else {
+          now_b.innerHTML = "";
+          now_b.className = "";
+        }
+      }
+      // ----- NEXT BANNER (proximo) -----
+      var next_b = document.getElementById("next-banner");
+      if (next_b){
+        if (window.__SINGERS_NEXT_QUEUE_USER){
+          var extra_next = "";
+          if (window.__SINGERS_NEXT_SINGER_ID){
+            var singers2 = (window.__SINGERS_LAST_LIST && window.__SINGERS_LAST_LIST.singers) || [];
+            var s2 = singers2.find(function(x){ return x.singer_id===window.__SINGERS_NEXT_SINGER_ID; });
+            if (s2){ extra_next = " — seu " + (s2.rounds_sung+1) + "º na ordem de chegada hoje: <strong>" +
+                                  window.__singers_escapeHtml(s2.name) + "</strong>"; }
+          }
+          next_b.innerHTML = '<span class="arrow">⏭️</span> PRÓXIMO A CANTAR: <strong>' +
+                              window.__singers_escapeHtml(window.__SINGERS_NEXT_QUEUE_USER) +
+                              '</strong>' + extra_next;
+          next_b.className = "singers-next-banner";
+        } else {
+          next_b.innerHTML = "";
+          next_b.className = "";
+        }
+      }
+      // ----- UNMATCHED BANNER (sugestoes de nomes nao linkados) -----
+      var um_b = document.getElementById("unmatched-banner");
+      if (um_b){
+        var arr = window.__SINGERS_UNMATCHED || [];
+        if (arr.length){
+          var pills = arr.map(function(u){
+            var title = u.title ? (' — ' + window.__singers_escapeHtml(u.title)) : "";
+            return '<span class="pill" onclick="__singers_quickLink(\'' +
+                   encodeURIComponent(u.user) + '\')" title="Clique 1x para linkar este nome com algum cantor existente' + title + '">' +
+                   '🔗 ' + window.__singers_escapeHtml(u.user) + '</span>';
+          }).join("");
+          um_b.innerHTML =
+            '<div style="font-weight:800; margin-bottom:5px;">⚠️ Sugestões: nomes da fila real AINDA NÃO LINKADOS a cantores. Clique em um para linkar RÁPIDO:</div>' + pills;
+          um_b.className = "singers-unmatched-banner";
+        } else {
+          um_b.innerHTML = "";
+          um_b.className = "";
+        }
+      }
+    };
+
+    window.__singers_render = function(payload){
+      // SE NAO ESTIVER NA ABA CANTORES: sai SILENCIOSAMENTE (sem erro, sem notification!)
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var STATUS_META = window.__SINGERS_STATUS_META;
+
+      var list = (payload && payload.singers) || [];
+      window.__SINGERS_LAST_LIST = payload || null;
+      var countBy = {};
+      list.forEach(function(s){ countBy[s.status]=(countBy[s.status]||0)+1; });
+      var tags = [];
+      var total = (payload && payload.total) || list.length;
+      tags.push('<span class="tag" style="background:#3b5bdb;">🎤 ' + total + ' total</span>');
+      if (countBy.waiting)       tags.push('<span class="tag" style="background:#34d399;">✅ Aguardando: ' + countBy.waiting + '</span>');
+      if (countBy.pending_music) tags.push('<span class="tag" style="background:#ef4444;">🔔 P/ chamar: ' + countBy.pending_music + '</span>');
+      if (countBy.skipping)      tags.push('<span class="tag" style="background:#f59e0b;">⏭️ Pulando rodada: ' + countBy.skipping + '</span>');
+      if (countBy.left_early)    tags.push('<span class="tag" style="background:#64748b;">❌ Saiu cedo: ' + countBy.left_early + '</span>');
+      if (countBy.sung)          tags.push('<span class="tag" style="background:#60a5fa;">🎵 Já cantou: ' + countBy.sung + '</span>');
+      var st = document.getElementById("stats-tags");
+      if (st) st.innerHTML = tags.join(" ");
+
+      // ============ BANNERS TOPO: DOIS SEPARADOS, conforme regras do operador ============
+      // (A) BANNER URGENTE VERMELHO PISCANDO: SÓ SE O PROXIMO(A) DA VEZ ESTIVER SEM MÚSICA.
+      //     → HORA DE CHAMAR ELE/ELA AGORA MESMO para escolher musica!
+      // (B) BANNER AMARELO NORMAL (SEM PISCA): Lista quem precisa add musica AINDA (nao chegou a vez).
+      var pending_all = list.filter(function(s){ return s.status==="pending_music"; });
+      var nextSinger = list.find(function(s){ return s.singer_id===nextId; });
+      var nextSemMusica = (nextSinger && nextSinger.status==="pending_music") ? nextSinger : null;
+      var outrosPending = pending_all.filter(function(s){
+        return !(nextSemMusica && s.singer_id===nextSemMusica.singer_id);
+      });
+      var banner = document.getElementById("calls-banner");
+      if (banner){
+        var html = "";
+        // (A) URGENTE (piscando): Proximo da vez SEM MUSICA.
+        if (nextSemMusica){
+          html += '<div class="singers-urgent-next-banner">' +
+                  '<span class="warn">🚨🔔🚨</span> URGENTE! É A VEZ DE: ' +
+                  '<strong style="font-size:1.15rem">' + window.__singers_escapeHtml(nextSemMusica.name) +
+                  ' (PRÓXIMO(A))</strong> — CHAMAR AGORA MESMO PARA SELECIONAR MÚSICA ANTES DE COMEÇAR!' +
+                  '</div>';
+        }
+        // (B) Lembrete AMARELO (sem pisca): Outros que ainda nao sao o proximo mas precisam add musica.
+        if (outrosPending.length>0){
+          var nomes = outrosPending.map(function(s){
+            return '<strong style="color:#fde68a;">'+window.__singers_escapeHtml(s.name)+'</strong>';
+          }).join(", ");
+          html += '<div class="singers-remind-music-banner">' +
+                  '<span class="bell">📝</span> Cantores que PRECISAM ADICIONAR MÚSICA ANTES DA VEZ CHEGAR: ' +
+                  nomes + '</div>';
+        }
+        banner.innerHTML = html;
+        banner.className = "";
+      }
+
+      var root = document.getElementById("singers-list");
+      if (!root) { window.__singers_renderMatchBanners(); return; }
+      if (!list.length){
+        root.innerHTML =
+          '<div class="singers-empty"><div class="icon"><i class="icon icon-users"></i></div>'+
+          '<div class="txt">Nenhum cantor na lista ainda.</div>'+
+          '<div class="sub">Quando alguém chegar, digite o nome acima e clique em "Adicionar". '+
+          'A ordem de chegada fica gravada.</div></div>';
+        window.__singers_renderMatchBanners();
+        return;
+      }
+      var nowId  = window.__SINGERS_NOW_SINGER_ID;
+      var nextId = window.__SINGERS_NEXT_SINGER_ID;
+      var cards = list.map(function(s,i){
+        var meta = STATUS_META[s.status] || {label:s.status, cls:"is-light"};
+        // ============== CORRECAO BUG SEQUENCIA SIMONE → JOAO #4 ==============
+        // SE ESTE CANTOR EH O NOW PLAYING (esta CANTANDO AGORA MESMO), a sua
+        // descricao de status NAO pode ser "Ja cantou (fim da rodada)" — ele
+        // esta no MEIO da musica! Muda para "🎤 Cantando agora" com classe chamativa,
+        // independente do status interno (que pode estar SUNG fantasma).
+        var isNowPlaying = (s.singer_id === nowId);
+        if (isNowPlaying){
+          meta = {
+            label: "🎤 Cantando agora (vez em andamento)",
+            cls:   "is-primary is-light"
+          };
+        }
+        // PENDING_MUSIC: tag DIFERENTE se EH O PROXIMO (urgencia CHAMAR AGORA)
+        // ou se ainda NAO EH a vez (so lembrete para adicionar musica antes).
+        if (!isNowPlaying && s.status === "pending_music"){
+          var isNextThis = (s.singer_id === nextId);
+          if (isNextThis){
+            meta = { label: "🚨 É A VEZ DELE/ELA! CHAMAR AGORA P/ ESCOLHER MÚSICA", cls: "is-danger" };
+          } else {
+            meta = { label: "⚠ Ainda não é sua vez - adicione música antes da vez chegar", cls: "is-warning is-light" };
+          }
+        }
+        // ===== OCULTAR TAG DE STATUS QUANDO NÃO HÁ AÇÃO (ficar só o fundo) =====
+        // SUNG (ja cantou fim da rodada): NAO APARECE NADA. Fundo limpo.
+        // WAITING (ja tem musica, so aguardando vez): Tambem NAO mostra tag. Sem acao.
+        // Só aparece tag se: now playing / pending_music (qualquer um) / skipping / left_early
+        var ocultarTag = false;
+        if (!isNowPlaying){
+          if (s.status === "sung") ocultarTag = true;
+          if (s.status === "waiting") ocultarTag = true;
+        }
+        if (ocultarTag){
+          meta = { label: "", cls: "" };
+        }
+        var statusTagHtml = (meta.label && meta.cls) ? ('<span class="tag '+meta.cls+'">'+meta.label+'</span> ') : "";
+        var roundLabel = s.rounds_sung ? ('<span>🎤 Já cantou ' + s.rounds_sung + 'x</span>') : "";
+        var songsLabel = s.songs_added_total ? ('<span>🎶 +' + s.songs_added_total + ' músicas</span>') : "";
+        var noteHtml = s.note ? ('<div class="singers-note">📝 ' + window.__singers_escapeHtml(s.note) + '</div>') : "";
+        // aliases display
+        var aliasesHtml = "";
+        var all_a = (s.aliases_display || s.aliases || []);
+        if (all_a.length){
+          aliasesHtml = '<div class="singers-aliases">' +
+            all_a.map(function(a){
+              return '<span class="alias">' + window.__singers_escapeHtml(a) +
+                     '<span class="x" onclick="__singers_removeAlias(\'' + s.singer_id + '\',\'' +
+                     encodeURIComponent(a) + '\')" title="Remover este apelido">✕</span></span>';
+            }).join("") +
+            ' <span class="alias" style="background:#334155; cursor:pointer; color:#e2e8f0;" ' +
+            'onclick="__singers_editAliases(\'' + s.singer_id + '\',\'' + encodeURIComponent(all_a.join(", ")) + '\')">✏️ Editar apelidos</span>' +
+            '</div>';
+        } else {
+          aliasesHtml = '<div class="singers-aliases">' +
+            '<span class="alias" style="background:#1e293b; cursor:pointer; color:#cbd5e1;" ' +
+            'onclick="__singers_editAliases(\'' + s.singer_id + '\',\'\')">🔗 Ligar c/ nome da fila real (apelidos)</span>' +
+            '</div>';
+        }
+        var badges = "";
+        var cardClass = "";
+        if (s.singer_id === nowId){
+          cardClass += " card-now-playing";
+          badges += '<div class="singers-badge-now">🎙️ CANTANDO AGORA</div>';
+        }
+        if (s.singer_id === nextId){
+          cardClass += " card-next-singer";
+          badges += '<div class="singers-badge-next">⏭️ PRÓXIMO(A)</div>';
+          // Se PROXIMO(A) estiver SEM MUSICA: adiciona piscada VERMELHA no card tambem.
+          if (s.status === "pending_music"){
+            cardClass += " card-next-needs-music-urgent";
+          }
+        }
+        return (
+          '<div class="card '+cardClass+'" data-sid="'+s.singer_id+'">'+ badges +
+            '<div class="singers-row">'+
+              '<div class="singers-order"><div class="ord">'+(i+1)+'</div><div class="arr">chegou às '+(s.arrival_str||'--:--')+'</div></div>'+
+              '<div class="singers-status-dot '+s.status+'" style="background:'+(s.status_color||'#94a3b8')+'" title="'+meta.label+'"></div>'+
+              '<div class="singers-info">'+
+                '<div class="singers-name">'+window.__singers_escapeHtml(s.name)+'</div>'+
+                '<div class="singers-meta">'+
+                  statusTagHtml+
+                  roundLabel+songsLabel+
+                  ' <span style="cursor:pointer" onclick="__singers_editNote(\''+s.singer_id+'\',\''+encodeURIComponent(s.note||'')+'\')" title="Editar anotação">✏️ Editar anotação</span>'+
+                '</div>'+
+                aliasesHtml +
+                noteHtml+
+              '</div>'+
+              '<div class="singers-actions">'+
+                '<button class="button is-success is-outlined" onclick="__singers_upd(\''+s.singer_id+'\',\'waiting\')">✅ Tem música</button> '+
+                '<button class="button is-danger is-outlined"  onclick="__singers_upd(\''+s.singer_id+'\',\'pending_music\')">🔔 Sem música</button> '+
+                '<button class="button is-warning is-outlined" onclick="__singers_upd(\''+s.singer_id+'\',\'skipping\')">⏭️ Pular rodada</button> '+
+                '<button class="button is-info is-outlined"    onclick="__singers_upd(\''+s.singer_id+'\',\'sung\')">🎵 Já cantou</button> '+
+                '<button class="button is-light is-outlined"    onclick="__singers_upd(\''+s.singer_id+'\',\'left_early\')">❌ Saiu cedo</button> '+
+                '<button class="button is-danger"               onclick="__singers_rm(\''+s.singer_id+'\',\''+encodeURIComponent(s.name)+'\')"><i class="icon icon-trash-empty"></i></button>'+
+              '</div>'+
+            '</div>'+
+          '</div>'
+        );
+      }).join("");
+      root.innerHTML = cards;
+      window.__singers_renderMatchBanners();
+    };
+
+    // ---------------- FASE2: apelidos / linkagens ----------------
+    window.__singers_editAliases = function(sid, encCsv){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var oldCsv = decodeURIComponent(encCsv || "");
+      // SmartokePy: MODAL com lista clicavel MULTI SELECT (marque varios apelidos).
+      // Mostra NOMES da fila real ja usados recentemente (lista de unmatched + cantores cadastrados).
+      showSingersPickerModal({
+        title: "Ligar nomes da fila real para este cantor",
+        subtitle: "Clique em TODOS os apelidos/nomes que voce escreve para adicionar musicas na fila real (ex: 'Mesa 5: Junior', 'juninho jose', etc). Pode selecionar varios!",
+        multi: true,
+        initial: oldCsv,
+        showCustomBtn: true,
+        onSelect: function(v){
+          if (v === null || v === undefined) return;
+          window.__singers_jsonPost(API.aliases, {singer_id:sid, csv:v}).then(function(r){
+            if (r && r.ok){
+              window.__singers_render(r.list);
+              window.__singers_refreshMatch();
+              if (window.__singers_is_on_page()) try { showNotification("Apelidos salvos.","is-success",1800); } catch(e){}
+            } else {
+              if (window.__singers_is_on_page()) try { showNotification("Erro: "+((r && r.error)||"?"),"is-danger"); } catch(e){}
+            }
+          });
+        }
+      });
+    };
+    window.__singers_removeAlias = function(sid, encAlias){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var al = decodeURIComponent(encAlias || "");
+      if (!al) return;
+      if (!confirm("Remover apelido '" + al + "'?")) return;
+      window.__singers_jsonPost(API.aliasRemove, {singer_id:sid, alias:al}).then(function(r){
+        if (r && r.ok){
+          window.__singers_render(r.list);
+          window.__singers_refreshMatch();
+        } else {
+          if (window.__singers_is_on_page()) try { showNotification("Erro","is-danger"); } catch(e){}
+        }
+      });
+    };
+    window.__singers_quickLink = function(encQueueUser){
+      // Clique no banner "Sugestoes" -> dialog: escolhe o cantor e adiciona o alias.
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var queueUser = decodeURIComponent(encQueueUser || "");
+      if (!queueUser) return;
+      var singers = (window.__SINGERS_LAST_LIST && window.__SINGERS_LAST_LIST.singers) || [];
+      if (!singers.length){
+        if (window.__singers_is_on_page())
+          try { showNotification("Nenhum cantor cadastrado ainda. Adicione primeiro e depois linke.","is-warning", 3500); } catch(e){}
+        return;
+      }
+      // SmartokePy: Modal picker single select (1 clique ja retorna o cantor escolhido).
+      // Monta lista com items falsos so para renderizar nomes principais (apenas exibe NOMES principais, sem apelidos).
+      var fakeList = singers.map(function(s){
+        return { singer_id: s.singer_id, name: s.name, aliases_display: [], aliases: [] };
+      });
+      // Picker helper custom: showSingersPickerModal so aceita fetch ou window cache.
+      // Fazemos uma versao local rapida com DOM overlay usando o mesmo style.
+      var SINGER_MODAL_ID = "__singers_suggest_link_modal";
+      try { var e = document.getElementById(SINGER_MODAL_ID); if (e) document.body.removeChild(e); } catch(_){}
+      var sel_count = "";
+      var btn_estilo_princ = "background:#1e293b; border-color:#475569; color:#f1f5f9; font-weight:600;";
+      var okbtn = "";
+      var HTML = (
+        '<div class="modal is-active" id="'+SINGER_MODAL_ID+'" style="z-index:99999;">' +
+        '<div class="modal-background" onclick="document.body.removeChild(document.getElementById(\''+SINGER_MODAL_ID+'\'))"></div>' +
+        '<div class="modal-card" style="width:94%; max-width:480px; max-height:86vh;">' +
+          '<header class="modal-card-head">' +
+            '<div><p class="modal-card-title is-size-5" style="margin:0;">Linkar nome da fila real</p>' +
+            '<p style="margin:4px 0 0 0; font-size:13px; opacity:.85;">Qual cantor é este? <b style="opacity:1;">'+queueUser.replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</b></p></div>' +
+            '<button class="delete" aria-label="close" onclick="document.body.removeChild(document.getElementById(\''+SINGER_MODAL_ID+'\'))"></button>' +
+          '</header>' +
+          '<section class="modal-card-body" style="padding:10px; overflow-y:auto;">' +
+            fakeList.map(function(s){
+              return '<button type="button" data-sid="'+s.singer_id+'" data-nome="'+encodeURIComponent(s.name)+'" style="'+btn_estilo_princ+'cursor:pointer; display:inline-block; margin: 4px 6px 4px 0; padding: 8px 12px; border-radius: 8px; border: 1px solid #334155; text-align:left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">👤 '+s.name.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")+'</button>';
+            }).join("") +
+          '</section>'+
+          '<footer class="modal-card-foot"><button class="button" onclick="document.body.removeChild(document.getElementById(\''+SINGER_MODAL_ID+'\'))">Cancelar</button></footer>'+
+        '</div></div>'
+      );
+      var w = document.createElement("div");
+      w.innerHTML = HTML;
+      document.body.appendChild(w.firstElementChild);
+      document.getElementById(SINGER_MODAL_ID).querySelectorAll("button[data-sid]").forEach(function(b){
+        b.addEventListener("click", function(){
+          var sid = b.getAttribute("data-sid");
+          var nome = decodeURIComponent(b.getAttribute("data-nome")||"");
+          try { document.body.removeChild(document.getElementById(SINGER_MODAL_ID)); } catch(_){}
+          if (!sid) return;
+          window.__singers_jsonPost(API.aliasAdd, {singer_id: sid, alias: queueUser}).then(function(r){
+            if (r && r.ok){
+              window.__singers_render(r.list);
+              window.__singers_refreshMatch();
+              if (window.__singers_is_on_page())
+                try { showNotification("Linkado! '" + queueUser + "' agora é: " + nome,"is-success", 2800); } catch(e){}
+            } else {
+              if (window.__singers_is_on_page()) try { showNotification("Erro","is-danger"); } catch(e){}
+            }
+          });
+        });
+      });
+    };
+
+    window.__singers_refreshMatch = function(){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      fetch(API.matchStatus, {cache:"no-store"})
+        .then(function(r){ return r.json().catch(function(){ return {ok:false}; }); })
+        .then(function(info){
+          if (!info || info.ok === false) return;
+          window.__SINGERS_NOW_SINGER_ID = info.now_singer_id || null;
+          window.__SINGERS_NEXT_SINGER_ID = info.next_singer_id || null;
+          window.__SINGERS_NOW_QUEUE_USER = info.now_queue_user || "";
+          window.__SINGERS_NEXT_QUEUE_USER = info.next_queue_user || "";
+          window.__SINGERS_UNMATCHED = info.unmatched || [];
+          // re-render se temos ultima lista (para aplicar classes card-now-playing/card-next-singer)
+          if (window.__SINGERS_LAST_LIST){
+            try { window.__singers_render(window.__SINGERS_LAST_LIST); } catch(e){}
+          } else {
+            window.__singers_renderMatchBanners();
+          }
+        })
+        .catch(function(){ /* silent */ });
+    };
+
+    window.__singers_refresh = function(){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      fetch(API.list,{cache:"no-store"})
+        .then(function(r){ return r.json(); })
+        .then(function(r){
+          window.__singers_render(r);
+          // em seguida pega o match status (tambem atualiza agora/proximo/nao linkados)
+          window.__singers_refreshMatch();
+        })
+        .catch(function(err){
+          console.error(err);
+          if (window.__singers_is_on_page()){
+            try { showNotification("Falha ao recarregar cantores: "+err,"is-danger"); } catch(e){}
+          }
+        });
+    };
+
+    window.__singers_upd = function(sid, status){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      window.__singers_jsonPost(API.upd, {singer_id:sid, status:status}).then(function(r){
+        if (r && r.ok){
+          window.__singers_render(r.list);
+          if (window.__singers_is_on_page()) try { showNotification("Status atualizado.","is-success",1500); } catch(e){}
+        } else {
+          if (window.__singers_is_on_page()) try { showNotification("Erro: "+((r && r.error)||"?"),"is-danger"); } catch(e){}
+        }
+      });
+    };
+    window.__singers_rm = function(sid, nameEnc){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var name = decodeURIComponent(nameEnc||"");
+      if (!confirm('Remover ' + (name ? '"'+name+'"' : 'este cantor') + ' da lista? Ordem de chegada dos outros permanece igual.')) return;
+      window.__singers_jsonPost(API.remove, {singer_id:sid}).then(function(r){
+        if (r && r.ok){
+          window.__singers_render(r.list);
+          if (window.__singers_is_on_page()) try { showNotification("Removido.","is-success",1500); } catch(e){}
+        } else {
+          if (window.__singers_is_on_page()) try { showNotification("Erro: "+((r && r.error)||"?"),"is-danger"); } catch(e){}
+        }
+      });
+    };
+    window.__singers_editNote = function(sid, noteEnc){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var oldNote = decodeURIComponent(noteEnc||"");
+      var v = prompt("Anotação para o cantor:", oldNote);
+      if (v === null) return;
+      window.__singers_jsonPost(API.note, {singer_id:sid, note:v}).then(function(r){
+        if (r && r.ok){
+          window.__singers_render(r.list);
+          if (window.__singers_is_on_page()) try { showNotification("Anotação salva.","is-success",1500); } catch(e){}
+        } else {
+          if (window.__singers_is_on_page()) try { showNotification("Erro: "+((r && r.error)||"?"),"is-danger"); } catch(e){}
+        }
+      });
+    };
+
+    window.__singers_doAdd = function(){
+      if (!window.__singers_is_on_page()) return;
+      var API = window.__SINGERS_API;
+      var $name = $("#in-name"), $note = $("#in-note"), $status = $("#in-status");
+      if (!$name.length) return;
+      var name   = ($name.val() || "").trim();
+      var note   = ($note.val() || "").trim();
+      var status = ($status.length ? $status.val() : "pending_music");
+      if (!name){ if (window.__singers_is_on_page()) try { showNotification("Digite o nome do cantor","is-warning"); } catch(e){} return; }
+      window.__singers_jsonPost(API.add, {name:name, note:note, status:status}).then(function(r){
+        if (r && r.ok){
+          window.__singers_render(r.list);
+          $("#in-name, #in-note").val("");
+          $("#in-status").val("pending_music");
+          if (window.__singers_is_on_page()){
+            try { showNotification(name + " adicionado. Entrou NO FIM da lista de chegada ✅","is-success", 2200); } catch(e){}
+          }
+        } else {
+          if (window.__singers_is_on_page()) try { showNotification("Erro: " + ((r && r.error) || "?"), "is-danger"); } catch(e){}
+        }
+      });
+    };
+
+    window.__singers_attach = function(){
+      // Soh roda se estiver NA ABA CANTORES
+      if (!window.__singers_is_on_page()) { window.__singers_attached = false; return; }
+      if (window.__singers_attached) {
+        // Mesmo que ja estivesse attached, se voltamos de outra pagina, faz refresh da tela agora
+        try { window.__singers_refresh(); } catch(e){}
+        return;
+      }
+      try { window.__singers_refresh(); } catch(e){}
+
+      // Socket updates (1 unica vez, global)
+      try {
+        if (typeof connectSocket === "function") { try { connectSocket(); } catch(e){} }
+        if (window.socket && !window.socket._singersAttached){
+          window.socket.on("singers_updated", function(data){
+            try { window.__singers_render(data); } catch(e){}
+            // depois de atualizar a lista, sempre puxa match_status de novo
+            try { window.__singers_refreshMatch(); } catch(e){}
+          });
+          window.socket.on("singers_pending_calls", function(data){
+            if (!window.__singers_is_on_page()) return;
+            try { showNotification("🔔 Cantor(es) esperando música: "+(data.count||0), "is-warning", 4000); } catch(e){}
+          });
+          // FASE2: recebe atualizacao de quem esta tocando agora / proximo / unmatched direto do socket
+          window.socket.on("singers_match_status", function(info){
+            try {
+              if (!info) return;
+              window.__SINGERS_NOW_SINGER_ID = info.now_singer_id || null;
+              window.__SINGERS_NEXT_SINGER_ID = info.next_singer_id || null;
+              window.__SINGERS_NOW_QUEUE_USER = info.now_queue_user || "";
+              window.__SINGERS_NEXT_QUEUE_USER = info.next_queue_user || "";
+              window.__SINGERS_UNMATCHED = info.unmatched || [];
+              if (window.__singers_is_on_page()){
+                // sempre renderiza BANNERS (agora/proximo/unmatched) mesmo que nao tenha LAST_LIST
+                window.__singers_renderMatchBanners();
+                if (window.__SINGERS_LAST_LIST){
+                  window.__singers_render(window.__SINGERS_LAST_LIST);
+                }
+              }
+            } catch(e){}
+          });
+          window.socket._singersAttached = true;
+        }
+      } catch(e){}
+
+      // setInterval polling 1.5s (fallback caso socket perca 1 pacote / tab em background)
+      if (!window.__SINGERS_INTERVAL){
+        window.__SINGERS_INTERVAL = setInterval(function(){
+          try { window.__singers_refresh(); } catch(e){}
+        }, 1500);
+      }
+
+      // --- Event delegation GLOBAL (unico, idempotente: off.on com namespace unico) ---
+      if (typeof $ !== "undefined"){
+        $(document)
+          .off("click.singers2026a").on("click.singers2026a", "#btn-refresh", function(e){ e.preventDefault(); window.__singers_refresh(); })
+          .off("click.singers2026b").on("click.singers2026b", "#btn-clear", function(e){
+            e.preventDefault();
+            if (!window.__singers_is_on_page()) return;
+            if (!confirm("Apagar TODOS os cantores da lista? (esta lista paralela só) - A fila de músicas REAL NÃO é alterada.")) return;
+            var API = window.__SINGERS_API;
+            window.__singers_jsonPost(API.clear, {}).then(function(r){
+              if (r && r.ok){
+                window.__singers_render(r.list);
+                if (window.__singers_is_on_page()) try { showNotification("Lista de cantores esvaziada.","is-success",1800); } catch(e){}
+              } else {
+                if (window.__singers_is_on_page()) try { showNotification("Erro","is-danger"); } catch(e){}
+              }
+            });
+          })
+          .off("click.singers2026c").on("click.singers2026c", "#btn-add", function(e){ e.preventDefault(); window.__singers_doAdd(); })
+          .off("keydown.singers2026d").on("keydown.singers2026d", "#in-name, #in-note", function(e){
+            if (e.key === "Enter"){ e.preventDefault(); window.__singers_doAdd(); }
+          });
+      }
+
+      window.__singers_attached = true;
+    };
+
+    // Boot check 1,5s idempotente (1 unica vez, global)
+    if (!window.__SINGERS_BOOT_INTERVAL){
+      window.__SINGERS_BOOT_INTERVAL = setInterval(function(){
+        try { window.__singers_attach(); } catch(e){}
+      }, 1500);
+    }
+  }
+
+  // ======================================================================
+  // EXECUTA SEMPRE (inclusive no SPA re-execute do bloco script):
+  // Se detectar que estamos NA ABA CANTORES, tenta attach/refresh imediatamente
+  // ======================================================================
+  try {
+    if (typeof $ !== "undefined" && $){
+      $(function(){ try { window.__singers_attach(); } catch(e){} });
+    }
+  } catch(e){ setTimeout(function(){ try { window.__singers_attach(); } catch(e){} }, 100); }
+  // fallback 1x
+  setTimeout(function(){ try { window.__singers_attach(); } catch(e){} }, 900);
+</script>
+
+{% endblock %}

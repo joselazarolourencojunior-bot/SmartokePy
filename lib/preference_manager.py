@@ -112,10 +112,37 @@ class PreferenceManager:
     def set(self, preference: str, val: Any, section: str = "USERPREFERENCES") -> tuple[bool, str]:
         """Update a preference, persist to config, and sync target object.
 
+        GARANTIA ADICIONAL: sempre normaliza o valor para o TIPO de DEFAULTS (ex: int p/ numericos,
+        bool para enable_fair_queue etc.), evitando gravar strings quebradas na preference.
+
         Returns (success, message) tuple.
         """
         logging.debug(f"Changing preference [{section}] << {preference} >> to {val}")
         try:
+            default = self.DEFAULTS.get(preference)
+            typed_val = val
+            if default is not None:
+                if isinstance(default, bool):
+                    try:
+                        if isinstance(val, str):
+                            typed_val = val.strip().lower() not in ("0", "false", "no", "off", "", "none")
+                        else:
+                            typed_val = bool(val)
+                    except Exception:
+                        typed_val = default
+                elif isinstance(default, int):
+                    try:
+                        typed_val = int(val)
+                    except (ValueError, TypeError):
+                        typed_val = default
+                elif isinstance(default, float):
+                    try:
+                        typed_val = float(val)
+                    except (ValueError, TypeError):
+                        typed_val = default
+                elif isinstance(default, str):
+                    typed_val = "" if val is None else str(val)
+
             # Read existing config to preserve other preferences
             self._config_obj.read(self.config_file_path, encoding="utf-8")
 
@@ -123,16 +150,18 @@ class PreferenceManager:
                 self._config_obj.add_section(section)
 
             prefs = self._config_obj[section]
-            prefs[preference] = str(val)
+            prefs[preference] = str(typed_val)
 
             with open(self.config_file_path, "w", encoding="utf-8") as conf:
                 self._config_obj.write(conf)
 
             # Auto-sync target object if registered
             if self._target is not None:
-                default = self.DEFAULTS.get(preference)
-                typed_val = str(val) if isinstance(default, str) else self._convert_value(val)
-                setattr(self._target, preference, typed_val)
+                if isinstance(default, str):
+                    sync_val = "" if typed_val is None else str(typed_val)
+                else:
+                    sync_val = typed_val
+                setattr(self._target, preference, sync_val)
 
             return (True, _("Your preferences were changed successfully"))
         except (OSError, configparser.Error) as e:

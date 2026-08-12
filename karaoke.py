@@ -31,6 +31,7 @@ from pikaraoke.lib.network import get_ip
 from pikaraoke.lib.playback_controller import PlaybackController
 from pikaraoke.lib.preference_manager import PreferenceManager
 from pikaraoke.lib.queue_manager import QueueManager
+from pikaraoke.lib.singer_manager import SingerManager
 from pikaraoke.lib.song_manager import SongManager
 from pikaraoke.lib.sound_manager import SoundManager
 from pikaraoke.lib.youtube_dl import (
@@ -61,6 +62,7 @@ class Karaoke:
     song_manager: SongManager
     queue_manager: QueueManager
     playback_controller: PlaybackController
+    singer_manager: SingerManager
 
     now_playing_notification: str | None = None
     volume: float
@@ -233,15 +235,119 @@ class Karaoke:
             streaming_format=self.streaming_format,
         )
 
+        # [FASE 1] Gerenciador de Lista Paralela de Cantores (Ordem de Chegada)
+        # FASE 2: Ja amarrado com queue_manager via eventos do EventSystem abaixo.
+        self.singer_manager = SingerManager()
+
+        # ============================================================
+        # [FASE 2 AMARRACAO CANTORES <-> FILA REAL / PLAYBACK]
+        # Funcoes de bridge (chamadas nos eventos internos do EventSystem).
+        # Sem tocar em queue_manager / playback_controller - tudo a partir dos
+        # eventos ja existentes. NUNCA PULA MUSICA (REGRA SUPREMA).
+        # ============================================================
+        def _fase2_refresh_singer_statuses_from_queue():
+            try:
+                sm = self.singer_manager
+                if not sm:
+                    return
+                queue_items = list(getattr(self.queue_manager, "queue", []) or [])
+                now_user = getattr(self.playback_controller, "now_playing_user", None)
+                np = self.get_now_playing()
+                next_user = np.get("next_user") if np else None
+                info = sm.refresh_statuses_from_queue(
+                    queue_items=queue_items,
+                    now_playing_user=now_user,
+                    next_user=next_user,
+                )
+                try:
+                    if self.socketio:
+                        self.socketio.emit("singers_match_status", info, namespace="/")
+                        self.socketio.emit("singers_updated", sm.to_dict(), namespace="/")
+                        pending = sm.get_pending_calls()
+                        self.socketio.emit(
+                            "singers_pending_calls",
+                            {
+                                "count": len(pending),
+                                "singers": [
+                                    {"singer_id": s.singer_id, "name": s.name}
+                                    for s in pending
+                                ],
+                            },
+                            namespace="/",
+                        )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logging.debug("[FASE2] refresh_statuses_from_queue falhou: %s", exc)
+
+        def _fase2_mark_singer_sung_now():
+            try:
+                sm = self.singer_manager
+                if not sm:
+                    return
+                user = getattr(self.playback_controller, "now_playing_user", None)
+                if user:
+                    singer = sm.mark_singer_sung_by_queue_user(str(user))
+                    if singer is not None:
+                        logging.info(
+                            "[FASE2 AUTOMATICO] musica comecou -> cantor marcado sung e "
+                            "movido pro fim: %s (user_fila=%s)",
+                            singer.name, str(user)
+                        )
+                        _fase2_refresh_singer_statuses_from_queue()
+            except Exception as exc:
+                logging.debug("[FASE2] mark_singer_sung_now falhou: %s", exc)
+
         # Event bridging: the coordinator wires manager events to the UI (SocketIO/notifications).
         self.events.on("notification", self.log_and_send)
         self.events.on(
             "queue_update",
-            lambda: self.socketio.emit("queue_update", namespace="/") if self.socketio else None,
+            lambda: (
+                (self.socketio.emit("queue_update", namespace="/") if self.socketio else None),
+                _fase2_refresh_singer_statuses_from_queue(),
+            )
+        )
+        self.events.on(
+            "preload_update",
+            lambda: self.socketio.emit(
+                "preload_update",
+                self.playback_controller.get_preload_status_map(False) if self.playback_controller else {},
+                namespace="/"
+            ) if self.socketio else None
         )
         self.events.on("now_playing_update", self.update_now_playing_socket)
+        self.events.on("now_playing_update", _fase2_refresh_singer_statuses_from_queue)
         self.events.on("playback_started", self.update_now_playing_socket)
+        # ============== CORRECAO BUG SEQUENCIA CANTORES (Simone → pula para Joao #4) ==============
+        # ANTES ERRADO: playback_started disparava mark_singer_sung_now() → MARCAVA o cantor como
+        # "ja cantou / fim da rodada" ANTES MESMO DE ELE COMECAR A CANTAR! Isso baguncava tudo:
+        #   #1 estava cantando agora → ja tava marcado SUNG → proximo ia pro #2,
+        #   mas se Randomizer ou sistema disparava playback_started varias vezes sem musica de
+        #   verdade, ia marcando SIMONE e MARIA como SUNG sem nunca terem cantado!
+        # CORRETO: play_back STARTED = soh refresh status UI (marcar WAITING / now playing).
+        # MARK_SUNG_SO_NO_FIM = SONG_ENDED: SIM, a musica ACABOU = ele realmente JA CANTOU!
+        self.events.on(
+            "playback_started",
+            lambda: _fase2_refresh_singer_statuses_from_queue()
+        )
         self.events.on("song_ended", self.update_now_playing_socket)
+        # CORRETO: song_ended → marca o user como SUNG (ja cantou de verdade) + refresh
+        self.events.on(
+            "song_ended",
+            lambda: (_fase2_mark_singer_sung_now(), _fase2_refresh_singer_statuses_from_queue())
+        )
+
+        # [V11 FIX-A BUG2 SEM SOM] Novo evento: stream URL mudou por RETRY do FFmpeg
+        # (mesma musica, NOVA URL de stream). Broadcast via socket.io para todos
+        # os clients Splash Master trocarem hls.loadSource(NOVA_URL) IMEDIATAMENTE,
+        # sem esperar o now_playing_update ou o playback_started.
+        self.events.on(
+            "playback_stream_url_changed",
+            lambda payload_dict: (
+                self.socketio.emit("playback_stream_url_changed", payload_dict, namespace="/"),
+                self.update_now_playing_socket(),
+            ) if self.socketio else None
+        )
         self.events.on("skip_requested", lambda: self.playback_controller.skip(False))
         self.events.on("song_downloaded", self.song_manager.register_download)
         self.events.on(
@@ -540,6 +646,11 @@ class Karaoke:
     def get_now_playing(self) -> dict[str, Any]:
         """Get the current playback state.
 
+        RETORNO DEFENSIVO V7: ANTES de devolver now_playing_url para clients,
+        valida com validate_now_playing_alive() que arquivo EXISTE e ffmpeg
+        esta healthy. Se STALE, invalidamos URL (nunca enviamos URL morta
+        para clients que gerara 404 loop infinito no Splash).
+
         Returns:
             Dictionary with now playing info, queue preview, and volume.
         """
@@ -548,6 +659,27 @@ class Karaoke:
 
         # Get playback state from PlaybackController
         playback_state = self.playback_controller.get_now_playing()
+
+        # ----- NOVO V7: stale state sanitizer -----
+        try:
+            alive_status = self.playback_controller.validate_now_playing_alive()
+        except Exception as exc:
+            logging.debug("validate_now_playing_alive exception in get_now_playing: %s", exc)
+            alive_status = "ok"
+
+        if alive_status == "stale":
+            now_url = playback_state.get("now_playing_url")
+            logging.warning(
+                "[get_now_playing STALE SANITIZER] now_playing_url=%s detectado STALE em "
+                "get_now_playing. ZERANDO URL para nao enviar 404 infinito aos clients. "
+                "Playback watchdog logo dispara end_song(stale_stream_detected) e toca a proxima.",
+                now_url,
+            )
+            playback_state["now_playing_url"] = None
+            playback_state["now_playing_subtitle_url"] = None
+            playback_state["is_playing"] = False
+            playback_state["now_playing"] = playback_state.get("now_playing") or None
+            playback_state["now_playing_position"] = None
 
         return {
             **playback_state,
@@ -564,11 +696,14 @@ class Karaoke:
     def run(self) -> None:
         """Main run loop - processes queue and plays songs.
 
-        This method blocks until stop() is called or KeyboardInterrupt.
+        OTIMIZACAO: apos iniciar uma musica, dispara preload da PROXIMA em
+        background. Em cada iteracao do loop, se queue[0] mudou (alguem removeu
+        ou adicionou nova na frente), atualiza o preload.
         """
         logging.debug("Starting PiKaraoke run loop")
         logging.info(f"Connect the player host to: {self.url}/splash")
         self.running = True
+        last_window_signature: tuple | None = None
         while self.running:
             try:
                 # Clean up if playback ended but state wasn't reset
@@ -592,12 +727,107 @@ class Karaoke:
                     song = self.queue_manager.pop_next()
                     if not song:
                         continue
-                    result = self.playback_controller.play_file(
-                        song["file"], song["user"], song["semitones"]
-                    )
+                    # ============== CORRECAO TELA ATUALIZAR NA HORA (JUNIOR SIMONE REFRESH) ==============
+                    # Pop_next REMOVEU a 1a musica da fila para agora tocar. A ORDEM DA FILA MUDOU!
+                    # Dispara evento queue_update para TODOS clientes socket.io receberem ATUALIZACAO
+                    # NA HORA (ex: pagina Fila do operador). Nao esperar polling de 1.5~2s para atualizar,
+                    # senao o operador chama a pessoa ERRADA durante esses segundos!
+                    try: self.events.emit("queue_update")
+                    except Exception: pass
+                    t0 = time.time()
+                    # ====== [V9 CAMADA DUPLA DE SEGURANÇA - BACKUP] ======
+                    # Mesmo que queue_manager.enqueue bloqueou, alguem pode ter add via
+                    # chamada direta ou arquivo foi apagado ENTRE enqueue e play.
+                    # Reforço: se arquivo nao existe, NOTIFICA e NAO TOCA (não passa
+                    # adiante p/ watchdogs p/ nao gerar pulo confuso).
+                    song_file = str(song.get("file") or "")
+                    ok_e, msg_e, resolved_p = QueueManager.validate_song_file_exists(song_file)
+                    if not ok_e:
+                        user_name = str(song.get("user") or "")
+                        logging.error(
+                            "[RUN LOOP V9 CANCEL PLAY] Tentou tocar musica mas arquivo NAO EXISTE no disco. "
+                            "user=%s file=%r msg=%s",
+                            user_name, song_file, msg_e[:260]
+                        )
+                        self.log_and_send(
+                            (
+                                f"⚠️ A música de '{user_name}' **não pôde ser tocada porque o arquivo NÃO EXISTE no servidor Dell**. "
+                                f"Ela foi automaticamente cancelada (não foi para o watchdog, não vai pular). "
+                                f"Arquivo: {song_file!r}. "
+                                f"Provavelmente o download do YouTube cancelou/falhou ou o arquivo foi apagado do diretório songs/. "
+                                f"Peça para o cantor tentar novamente (outra música ou re-download)."
+                            ),
+                            "danger",
+                        )
+                        # Emite notification UI tambem
+                        try:
+                            self.events.emit("notification", msg_e, "danger")
+                        except Exception:
+                            pass
+                        # Cancela essa música silenciosamente. Não toca, não trava, não pula (já "skipou").
+                        # Atualiza queue/now_playing para UI refletir que acabou de "passar".
+                        self.events.emit("queue_update")
+                        self.events.emit("now_playing_update")
+                        continue
+                    # (opcional) substituir path resolvido no dict p/ play_file usar
+                    if resolved_p:
+                        song["file"] = resolved_p
+                        song_file = resolved_p
 
+                    result = self.playback_controller.play_file(
+                        song_file, song["user"], song["semitones"]
+                    )
+                    lat_ms = (time.time() - t0) * 1000.0
                     if not result.success and result.error:
                         self.log_and_send(result.error, "danger")
+                        logging.warning(
+                            "[LATENCIA FAIL] Falhou iniciar %s | user=%s | %.0fms | erro=%s",
+                            song["file"].split("/")[-1], song["user"], lat_ms, str(result.error)[:160]
+                        )
+                    else:
+                        logging.info(
+                            "[LATENCIA QUEUE -> PLAYBACK START] %s | user=%s | total %.0fms",
+                            song["file"].split("/")[-1], song["user"], lat_ms
+                        )
+                    # ============== CORRECAO TELA ATUALIZAR NA HORA (JUNIOR SIMONE REFRESH) ==============
+                    # AGORA a musica comecou (ou falhou pra iniciar) = O NOW PLAYING MUDOU!
+                    # A pagina Fila mostra quem esta cantando AGORA (1a linha) e a ORDEM de quem vem
+                    # depois. Dispara TODOS os eventos possiveis de socket.io para TODOS navegadores
+                    # conectados receberem ATUALIZACAO NA HORA, sem precisar esperar polling.
+                    # Sem isso, o operador fica 1~2s com tela antiga e chama pessoa ERRADA!
+                    try: self.events.emit("now_playing")
+                    except Exception: pass
+                    try: self.events.emit("now_playing_update")
+                    except Exception: pass
+                    try: self.events.emit("queue_update")
+                    except Exception: pass
+                    # Apos iniciar uma musica, forca um refresh completo da janela na proxima iteracao
+                    # (agora queue mudou porque demos pop_next()).
+                    last_window_signature: tuple | None = None
+
+                # --- NOVO: Mantem JANELA DE 5 PRELOADS sempre atualizada ---
+                # Substitui o preload_next(queue[0]) unico anterior: agora temos as 5 proximas
+                # prontas em background, MAX_PARALLEL=1 (Dell seguro, sem travar a musica atual).
+                q = self.queue_manager.queue
+                if len(q) > 0:
+                    from pikaraoke.lib.queue_manager import QueueManager as _QM
+                    # Garantir qid em todos itens da janela (para itens criados antes do patch)
+                    window_raw = q[:self.playback_controller.PRELOAD_WINDOW_MAX]
+                    for it in window_raw:
+                        _QM.ensure_item_qid(it)
+                    # Assinatura = tupla de (qid, file, semitones) para detectar mudancas na fila
+                    sig = tuple(
+                        (str(it.get("qid") or ""), str(it.get("file") or ""), int(it.get("semitones") or 0))
+                        for it in window_raw
+                    )
+                    if sig != last_window_signature:
+                        self.playback_controller.refresh_queue_window(window_raw)
+                        last_window_signature = sig
+                else:
+                    if last_window_signature is not None:
+                        # Fila ficou vazia: cancela todos preloads pendentes para economizar CPU
+                        self.playback_controller._cancel_any_pending_preload()
+                    last_window_signature = None
 
                 self.playback_controller.log_output()
                 self.handle_run_loop()

@@ -88,35 +88,368 @@
       setTimeout(function () {$("#notification-alt").removeClass(categoryClass)}, timeout + 750)
     }
 
-    function updateCurrentUserDisplay(user) {
-      const normalizedUser = (user || "").trim();
-
-      if (normalizedUser) {
-        $("#current-user span").text(normalizedUser);
-        $("#current-user").removeClass("is-hidden");
-        return;
+    // =====================================================================
+    // PICKER DE CANTORES CADASTRADOS (lista clicavel de NOMES EXATOS)
+    // - Nao precisa digitar nada, so clicar.
+    // - Mostra: 1 botao para o NOME PRINCIPAL + 1 botao para CADA APELIDO.
+    // - Suporta single pick (1 valor) OU multi pick (CSV separados por virgula).
+    // =====================================================================
+    window.__SINGERS_CACHE = { ts: 0, list: [], registered_singers: [], unmatched_queue_users: [] };
+    async function __pickFetchSingers() {
+      var now = Date.now();
+      if (now - window.__SINGERS_CACHE.ts < 15000 && (window.__SINGERS_CACHE.registered_singers.length || window.__SINGERS_CACHE.unmatched_queue_users.length)) {
+        return window.__SINGERS_CACHE;
       }
-
-      $("#current-user span").text("");
-      $("#current-user").addClass("is-hidden");
+      try {
+        var r = await fetch("/api/singers/picker_options", { headers: { "X-Requested-With":"XMLHttpRequest", "Accept":"application/json" }});
+        if (!r.ok) throw new Error("HTTP "+r.status);
+        var j = await r.json();
+        var reg = Array.isArray(j && j.registered_singers) ? j.registered_singers : [];
+        var unm = Array.isArray(j && j.unmatched_queue_users) ? j.unmatched_queue_users : [];
+        window.__SINGERS_CACHE = {
+          ts: Date.now(),
+          registered_singers: reg,
+          unmatched_queue_users: unm,
+          // compatibilidade antiga: list = singers cadastrados como objetos {name, aliases_display}
+          list: reg,
+          generated_at: (j && j.generated_at) || 0
+        };
+        return window.__SINGERS_CACHE;
+      } catch(e){
+        // fallback endpoint antigo se o novo ainda nao existe (por algum motivo)
+        try {
+          var r2 = await fetch("/api/singers", { headers: { "X-Requested-With":"XMLHttpRequest", "Accept":"application/json" }});
+          var j2 = await r2.json();
+          var reg2 = Array.isArray(j2 && j2.singers) ? j2.singers.map(function(s){
+            return { singer_id: s.singer_id, name: s.name, aliases_display: (s.aliases_display || s.aliases || []), status: s.status };
+          }) : [];
+          window.__SINGERS_CACHE = {
+            ts: Date.now(), registered_singers: reg2, unmatched_queue_users: [], list: reg2, generated_at: (j2 && j2.generated_at) || 0
+          };
+          return window.__SINGERS_CACHE;
+        } catch(e2){
+          return window.__SINGERS_CACHE;
+        }
+      }
+    }
+    /**
+     * Abre MODAL com LISTA CLICAVEL de cantores cadastrados + nomes da fila real recentes.
+     * opts: {
+     *   title: "texto do topo",
+     *   subtitle: "texto explicativo menor",
+     *   multi: false (true = pode selecionar varios, retorna CSV; false = 1 clique retorna),
+     *   initial: "valor inicial (string pre-selecionado)",
+     *   showCustomBtn: true (botao "Digitar outro nome manualmente?"),
+     *   onSelect: function(valorEscolhido) => {}  // callback obrigatorio
+     * }
+     */
+    function showSingersPickerModal(opts) {
+      opts = opts || {};
+      if (!opts.onSelect) return;
+      var title = opts.title || "Selecione um cantor";
+      var subtitle = opts.subtitle || "Clique no nome exato (apelidos tambem estao listados abaixo)";
+      var multi = !!opts.multi;
+      var initial = (opts.initial || "").trim();
+      var showCustom = opts.showCustomBtn !== false;
+      var selectedSet = new Set();
+      if (multi && initial) {
+        initial.split(/[,;]/).map(function(x){return (x||"").trim();}).filter(Boolean).forEach(function(s){ selectedSet.add(s); });
+      }
+      var MODAL_ID = "__singers_picker_modal";
+      try { var elx = document.getElementById(MODAL_ID); if (elx) document.body.removeChild(elx); } catch(e){}
+      var selcount_html = multi
+        ? '<span id="'+MODAL_ID+'_selcount" style="opacity:.85; font-size:13px;">0 selecionados</span>'
+        : '';
+      var okbtn_style = multi ? 'style="display:none;"' : '';
+      var HTML = (
+        '<div class="modal is-active" id="'+MODAL_ID+'" style="z-index:99999;">' +
+          '<div class="modal-background" onclick="document.body.removeChild(document.getElementById(\''+MODAL_ID+'\'))"></div>' +
+          '<div class="modal-card" style="width:94%; max-width:520px; max-height:88vh;">' +
+            '<header class="modal-card-head">' +
+              '<div>' +
+                '<p class="modal-card-title is-size-5" style="margin:0;">'+title+'</p>' +
+                '<p style="margin:4px 0 0 0; font-size:13px; opacity:.85;">'+subtitle+'</p>' +
+              '</div>' +
+              '<button class="delete" aria-label="close" onclick="document.body.removeChild(document.getElementById(\''+MODAL_ID+'\'))"></button>' +
+            '</header>' +
+            '<section class="modal-card-body" style="padding: 0; overflow-y:auto;">' +
+              '<div id="'+MODAL_ID+'_list" style="padding: 10px;">' +
+                '<p style="opacity:.7; text-align:center; padding: 30px 0;">⏳ Carregando nomes disponíveis...</p>' +
+              '</div>' +
+            '</section>' +
+            '<footer class="modal-card-foot is-justify-content-space-between" style="padding: 12px 16px;">' +
+              '<div>'+selcount_html+'</div>' +
+              '<div class="is-flex is-gap-1">' +
+                '<button class="button" onclick="document.body.removeChild(document.getElementById(\''+MODAL_ID+'\'))" style="margin-right:8px;">Cancelar</button>' +
+                '<button class="button is-info" id="'+MODAL_ID+'_customBtn">Digitar outro nome</button>' +
+                '<button class="button is-success" id="'+MODAL_ID+'_okBtn" '+okbtn_style+' >OK</button>' +
+              '</div>' +
+            '</footer>' +
+          '</div>' +
+        '</div>'
+      );
+      var wrap = document.createElement("div");
+      wrap.innerHTML = HTML;
+      document.body.appendChild(wrap.firstElementChild);
+      var listEl = document.getElementById(MODAL_ID+"_list");
+      var okBtn = document.getElementById(MODAL_ID+"_okBtn");
+      var countEl = document.getElementById(MODAL_ID+"_selcount");
+      var customBtn = document.getElementById(MODAL_ID+"_customBtn");
+      if (!showCustom) customBtn.style.display = "none";
+      function fechar() { try { document.body.removeChild(document.getElementById(MODAL_ID)); } catch(e){} }
+      function updateCount() {
+        if (!multi || !countEl) return;
+        var n = selectedSet.size;
+        countEl.textContent = n + " selecionado"+(n===1?"":"s");
+        okBtn.style.display = (n>0 ? "" : "none");
+      }
+      function render(data) {
+        var reg = (data && Array.isArray(data.registered_singers)) ? data.registered_singers : [];
+        var unm = (data && Array.isArray(data.unmatched_queue_users)) ? data.unmatched_queue_users : [];
+        if ((!reg.length) && (!unm.length)) {
+          listEl.innerHTML = '<p style="opacity:.7;text-align:center;padding:30px 0;">Nenhum nome disponível ainda. Clique em "Digitar outro nome".</p>';
+          updateCount(); return;
+        }
+        // (A) Secao 1: Cantores cadastrados (com aliases)
+        var htmlA = "";
+        if (reg.length) {
+          htmlA += '<div style="margin-bottom: 16px;">'+
+            '<p style="font-size: 12px; opacity:.8; margin: 6px 6px 10px 4px; text-transform: uppercase; letter-spacing:.3px;">✅ Cantores cadastrados (você adicionou na aba Cantores)</p>';
+          reg.forEach(function(s){
+            var nome = String(s.name||"").trim();
+            if (!nome) return;
+            // nome principal
+            var sel = selectedSet.has(nome);
+            var estilo = "background:#1e293b; border-color:#475569; color:#f1f5f9; font-weight:600;";
+            if (sel) estilo = "box-shadow:0 0 0 2px #3b82f6 inset; background:#1e3a8a; color:white; border-color:#3b82f6;";
+            htmlA += '<button type="button" class="__sp_btn __sp_btn_reg" data-label="'+encodeURIComponent(nome)+'" data-section="reg" '+
+              'style="'+estilo+'cursor:pointer; display:inline-block; margin: 4px 6px 4px 0; padding: 8px 12px; border-radius: 8px; border: 1px solid #334155; text-align:left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">'+
+              '👤 '+nome.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")+'</button>';
+            // apelidos
+            (s.aliases_display || s.aliases || []).forEach(function(a){
+              var al = String(a||"").trim();
+              if (!al) return;
+              var sel2 = selectedSet.has(al);
+              var est2 = "background:#0f172a; border-color:#334155; color:#cbd5e1; font-size:13px;";
+              if (sel2) est2 = "box-shadow:0 0 0 2px #3b82f6 inset; background:#1e3a8a; color:white; border-color:#3b82f6;";
+              htmlA += '<button type="button" class="__sp_btn __sp_btn_alias" data-label="'+encodeURIComponent(al)+'" data-section="reg_alias" '+
+                'style="'+est2+'cursor:pointer; display:inline-block; margin: 4px 6px 4px 0; padding: 6px 10px; border-radius: 8px; border: 1px solid #334155; text-align:left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">'+
+                '🔗 '+al.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")+'</button>';
+            });
+          });
+          htmlA += '</div>';
+        }
+        // (B) Secao 2: Nomes recentes na fila (unmatched) — estilo AMARELO ⚠️
+        var htmlB = "";
+        if (unm.length) {
+          htmlB += '<div>'+
+            '<p style="font-size: 12px; opacity:.9; margin: 6px 6px 10px 4px; text-transform: uppercase; letter-spacing:.3px; color:#fbbf24;">⚠️ Vieram da FILA REAL de músicas (você ainda NÃO ligou a nenhum cantor)</p>';
+          unm.forEach(function(u){
+            var nm = String(u.user||"").trim();
+            if (!nm) return;
+            var qtd = u.count_songs || 0;
+            var sel = selectedSet.has(nm);
+            var est = "background:#451a03; border-color:#b45309; color:#fde68a; font-weight:500;";
+            if (sel) est = "box-shadow:0 0 0 2px #f59e0b inset; background:#78350f; color:#fff7ed; border-color:#f59e0b;";
+            var rot = qtd ? (" ("+qtd+" música"+(qtd===1?"":"s")+" já adicionada"+(qtd===1?"":"s")+")") : "";
+            htmlB += '<button type="button" class="__sp_btn __sp_btn_unm" data-label="'+encodeURIComponent(nm)+'" data-section="queue_unmatched" '+
+              'style="'+est+'cursor:pointer; display:inline-block; margin: 4px 6px 4px 0; padding: 8px 12px; border-radius: 8px; border: 1px solid #92400e; text-align:left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">'+
+              '🎵 '+nm.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")+rot+'</button>';
+          });
+          htmlB += '</div>';
+        }
+        listEl.innerHTML = '<div style="padding:6px 4px;">'+htmlA+htmlB+'</div>';
+        listEl.querySelectorAll("button.__sp_btn").forEach(function(btn){
+          btn.addEventListener("click", function(){
+            var val = decodeURIComponent(btn.getAttribute("data-label")||"");
+            if (!val) return;
+            if (!multi) { fechar(); opts.onSelect(val); return; }
+            // multi toggle
+            if (selectedSet.has(val)) {
+              selectedSet.delete(val);
+              var sec = btn.getAttribute("data-section") || "";
+              if (sec==="reg") { // nome principal cadastrado
+                btn.style.background = "#1e293b";
+                btn.style.color = "#f1f5f9";
+                btn.style.borderColor = "#475569";
+                btn.style.boxShadow = "";
+              } else if (sec==="reg_alias") {
+                btn.style.background = "#0f172a";
+                btn.style.color = "#cbd5e1";
+                btn.style.borderColor = "#334155";
+                btn.style.boxShadow = "";
+              } else { // unmatched
+                btn.style.background = "#451a03";
+                btn.style.color = "#fde68a";
+                btn.style.borderColor = "#92400e";
+                btn.style.boxShadow = "";
+              }
+            } else {
+              selectedSet.add(val);
+              var sec2 = btn.getAttribute("data-section") || "";
+              if (sec2 && sec2 === "queue_unmatched") {
+                btn.style.boxShadow = "0 0 0 2px #f59e0b inset";
+                btn.style.background = "#78350f";
+                btn.style.color = "#fff7ed";
+                btn.style.borderColor = "#f59e0b";
+              } else {
+                btn.style.boxShadow = "0 0 0 2px #3b82f6 inset";
+                btn.style.background = "#1e3a8a";
+                btn.style.color = "white";
+                btn.style.borderColor = "#3b82f6";
+              }
+            }
+            updateCount();
+          });
+        });
+        updateCount();
+      }
+      customBtn.addEventListener("click", function(){
+        var msg = multi ? "Digite um ou mais nomes, separados por vírgula:" : "Digite o nome manualmente:";
+        var init = multi ? (Array.from(selectedSet).join(", ") || initial || "") : (initial || "");
+        var v = window.prompt(msg, init);
+        if (v === null) return;
+        v = String(v).trim();
+        if (!v) return;
+        if (multi) {
+          v.split(/[,;]/).map(function(x){return x.trim();}).filter(Boolean).forEach(function(p){ selectedSet.add(p); });
+          updateCount();
+          try { render(window.__SINGERS_CACHE); } catch(e){}
+        } else {
+          fechar(); opts.onSelect(v);
+        }
+      });
+      if (okBtn && multi) {
+        okBtn.addEventListener("click", function(){
+          if (!selectedSet.size) return;
+          var val = Array.from(selectedSet).join(", ");
+          fechar(); opts.onSelect(val);
+        });
+      }
+      __pickFetchSingers().then(render);
     }
 
-    function setUserCookie(reload=false) {
-      var user = Cookies.get("user");
-      if (!user) {
-        let name = window.prompt(
-          // {# MSG: Prompt which asks the user their name when they first try to add to the queue. #}
-          "{{ _('Please enter your name. This will show up next to the songs you queue up from this device.') }}"
-        );
-        if (name) {
-          Cookies.set("user", name, { expires: 3650, path: '/' });
+    function updateCurrentUserDisplay(user) {
+      var normalizedUser = (user || "").replace(/^\s+|\s+$/g, "");
+      try {
+        var el = document.getElementById("current-user");
+        if (normalizedUser) {
+          var span = el ? el.querySelector("span") : null;
+          if (span) span.textContent = normalizedUser;
+          if (el) try { el.classList.remove("is-hidden"); } catch(_){}
+        } else {
+          if (el) {
+            var sp2 = el.querySelector("span");
+            if (sp2) sp2.textContent = "";
+            try { el.classList.add("is-hidden"); } catch(_){}
+          }
         }
-        else {
-          Cookies.set("user", `Anon-${generateRandomString(4)}`, { expires: 3650, path: '/' });
-        }
-        updateCurrentUserDisplay(Cookies.get("user"));
-        reload && location.reload();
+      } catch(e) {
+        try { $("#current-user span").text(normalizedUser); if (normalizedUser) { $("#current-user").removeClass("is-hidden"); } else { $("#current-user").addClass("is-hidden"); } } catch(_){}
       }
+      // ============== CORRECAO BUG Junior-Simone ==============
+      // SEMPRE que o usuario mudar (mesmo sem reload da pagina!):
+      //   1) Atualiza TODOS inputs hidden .song_added_by da pagina (form #queue-form no Search etc)
+      //   2) Atualiza TODOS links <a href="...&user=" que aparecem em files.html (Pagina Navegar)
+      //   3) Dispara evento custom global 'userchanged' para paginas reagirem se precisarem.
+      var encoded;
+      try { encoded = encodeURIComponent(normalizedUser || ""); } catch(_) { encoded = ""; }
+      try {
+        // 1) Inputs hidden (search.html queue-form, possivelmente outros forms)
+        var inputsSongAddedBy = document.querySelectorAll("input.song_added_by, input[name='song_added_by'], input[name='added_by_user'], input[name='user'][type='hidden']");
+        for (var idx = 0; idx < inputsSongAddedBy.length; idx++) {
+          try { inputsSongAddedBy[idx].value = normalizedUser || ""; } catch(_){}
+        }
+        // jQuery fallback se existir
+        try {
+          if (window.jQuery) {
+            jQuery("input.song_added_by, input[name='song_added_by'], input[name='added_by_user'], input[name='user'][type='hidden']").val(normalizedUser || "");
+          }
+        } catch(_){}
+        // 2) Links de enfileirar (files.html => href=".../enqueue?song=XYZ&user=")
+        var linksEnqueue = document.querySelectorAll("a[href*='/enqueue'][href*='user='], a.add-song-link");
+        for (var j = 0; j < linksEnqueue.length; j++) {
+          try {
+            var ah = linksEnqueue[j].getAttribute("href") || "";
+            if (!ah) continue;
+            // Atualiza o valor na query string user=
+            if (ah.indexOf("user=") !== -1) {
+              var newHref = ah.replace(/([?&])user=[^&]*/g, function(match, p1){ return p1 + "user=" + encoded; });
+              // Se jah terminou com user= vazio no final, concatena
+              if (/[?&]user=$/.test(newHref)) newHref = newHref + encoded;
+              linksEnqueue[j].setAttribute("href", newHref);
+            } else if (ah.indexOf("/enqueue") !== -1) {
+              // Nao tinha user jah, adiciona
+              var sep = (ah.indexOf("?") === -1) ? "?" : "&";
+              linksEnqueue[j].setAttribute("href", ah + sep + "user=" + encoded);
+            }
+          } catch(_){}
+        }
+        // 3) Evento custom global
+        try {
+          var ev;
+          if (typeof window.CustomEvent === "function") {
+            ev = new CustomEvent("userchanged", { detail: { user: normalizedUser || "" } });
+          } else {
+            // IE fallback
+            ev = document.createEvent("CustomEvent");
+            ev.initCustomEvent("userchanged", false, false, { user: normalizedUser || "" });
+          }
+          window.dispatchEvent(ev);
+          document.dispatchEvent(ev);
+          if (window.jQuery) try { jQuery(window).trigger("userchanged", [{ user: normalizedUser || "" }]); } catch(_){}
+        } catch(_){}
+      } catch(bigErr) {
+        try { console.error("updateCurrentUserDisplay propragate err:", bigErr); } catch(_){}
+      }
+    }
+
+    function setUserCookie(reload=false, force=false) {
+      var user = Cookies.get("user");
+      if (force) user = null;
+      if (!user) {
+        // SmartokePy: mostra MODAL com lista de BOTOES clicaveis de TODOS cantores cadastrados
+        // (nome principal + cada apelido separado). Nao precisa digitar nada.
+        // Botao "Digitar outro nome" no rodabre abre o prompt() como fallback.
+        showSingersPickerModal({
+          title: "Quem esta adicionando musica agora?",
+          subtitle: "Clique no NOME EXATO abaixo (nao precisa digitar nada! Apelidos aparecem separados).",
+          multi: false,
+          showCustomBtn: true,
+          onSelect: function(name) {
+            if (name) {
+              Cookies.set("user", name, { expires: 3650, path: '/' });
+            } else {
+              Cookies.set("user", "Anon-"+generateRandomString(4), { expires: 3650, path: '/' });
+            }
+            updateCurrentUserDisplay(Cookies.get("user"));
+            if (reload) location.reload();
+            try { window.__userPickDoneAt = Date.now(); } catch(e){}
+          }
+        });
+      }
+    }
+
+    /** Helper ASYNCRONO: garante que user cookie exista (abre picker se nao), entao chama callback(user). */
+    function withUserCookie(callback, force=false) {
+      var user = Cookies.get("user");
+      if (force) user = null;
+      if (user) { try { callback(user); } catch(e){ console.error(e); } return; }
+      showSingersPickerModal({
+        title: "Quem esta adicionando musica agora?",
+        subtitle: "Clique no NOME EXATO abaixo (nao precisa digitar nada! Apelidos aparecem separados).",
+        multi: false,
+        showCustomBtn: true,
+        onSelect: function(name) {
+          if (name) {
+            Cookies.set("user", name, { expires: 3650, path: '/' });
+          } else {
+            Cookies.set("user", "Anon-"+generateRandomString(4), { expires: 3650, path: '/' });
+          }
+          updateCurrentUserDisplay(Cookies.get("user"));
+          try { callback(Cookies.get("user")); } catch(e){ console.error(e); }
+        }
+      });
     }
 
     function getUserCookie() {
@@ -176,8 +509,31 @@
       setTimeout(function() { $("#notification").fadeOut()}, 3000);
 
       // handle current user display
-      var currentUser = Cookies.get("user");
-      updateCurrentUserDisplay(currentUser);
+      // Use setTimeout(0) para garantir que updateCurrentUserDisplay foi declarada no fim do <script>
+      // (evita ReferenceError se por algum motivo o ready() disparar antes do parser terminar o bloco)
+      setTimeout(function(){
+        try {
+          var currentUser = Cookies.get("user");
+          if (typeof updateCurrentUserDisplay === 'function') {
+            updateCurrentUserDisplay(currentUser);
+          } else {
+            // fallback embutido caso a funcao principal desapareca
+            var el = document.getElementById("current-user");
+            if (el) {
+              var span = el.querySelector("span");
+              if (currentUser) {
+                if (span) span.textContent = String(currentUser);
+                try { el.classList.remove("is-hidden"); } catch(_){}
+              } else {
+                if (span) span.textContent = "";
+                try { el.classList.add("is-hidden"); } catch(_){}
+              }
+            }
+          }
+        } catch(err) {
+          try { console.error("updateCurrentUserDisplay fallback err:", err); } catch(_){}
+        }
+      }, 0);
 
       // Username change handler is now in spa-navigation.js
 
@@ -198,12 +554,6 @@
     left: 50%;
     margin-left: -250px;
     z-index: 20;
-  }
-  .current-user {
-    position: fixed;
-    padding: 3px;
-    bottom: 5px;
-    right: 10px;
   }
   tr:nth-child(even) {
     background-color: rgb(50, 55, 55);
@@ -246,6 +596,10 @@
           {# MSG: Navigation link for the queue page. #}
           <span>{% trans %}Queue{% endtrans %}</span>
         </a>
+        <a id="singers" class="navbar-item" href="{{ url_for('singers.singers') }}">
+          <i class="icon icon-users" title="Cantores (Ordem de Chegada)"></i>
+          <span>Cantores</span>
+        </a>
         <a id="search" class="navbar-item" href="{{ url_for('search.search') }}">
           <i class="icon icon-search-1" title="Search"></i>
           {# MSG: Navigation link for the search page add songs to the queue. #}
@@ -264,8 +618,8 @@
       </div>
       <div class="navbar-menu" id="menu">
         <div class="navbar-end">
-          <a id="current-user" class="navbar-item is-hidden" href="#">
-            <i class="icon  icon-mic-1" title="Current user"></i>
+          <a id="current-user" class="navbar-item is-hidden" href="#" title="Clique para mudar o nome da pessoa usando este dispositivo">
+            <i class="icon icon-mic-1" title="Current user"></i>
             <span></span>
           </a>
           <a id="info" class="navbar-item" href="{{ url_for('info.info') }}">
