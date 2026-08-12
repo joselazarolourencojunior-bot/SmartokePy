@@ -28,6 +28,7 @@ class QueueManager:
         get_now_playing_user: Callable[[], str | None] | None = None,
         filename_from_path: Callable[[str, bool], str] | None = None,
         get_available_songs: Callable[[], Any] | None = None,
+        singer_manager: Any | None = None,
     ) -> None:
         self.queue: list[dict[str, Any]] = []
         self._preferences = preferences
@@ -35,6 +36,7 @@ class QueueManager:
         self._get_now_playing_user = get_now_playing_user
         self._filename_from_path = filename_from_path
         self._get_available_songs = get_available_songs
+        self._singer_manager = singer_manager
         self._last_popped_user_key: str | None = None
         self._round_seen_user_keys: set[str] = set()
 
@@ -533,6 +535,38 @@ class QueueManager:
         self._round_seen_user_keys.add(self._last_popped_user_key)
         logging.info(f"Popped song from queue: {song['title']}")
         return song
+
+    def pop_next_only_for_singer(self, singer: Any) -> dict[str, Any] | None:
+        """LEI ABSOLUTA: Remove e retorna a PRÓXIMA MÚSICA NA FILA REAL QUE PERTENCE
+        EXCLUSIVAMENTE A ESSE CANTOR (paralelo SingerManager). Ordem FIFO apenas das
+        músicas DESSE cantor. Se o cantor NÃO TEM NENHUMA música na fila → retorna None
+        (SISTEMA BLOQUEIA, ninguém toca antes da vez dele).
+
+        Matching: usa singer_manager.matches_queue_user(singer, user_str) para considerar
+        nome normalizado OU apelidos (aliases) cadastrados.
+        """
+        if singer is None:
+            return None
+        if not self.queue:
+            return None
+        sm = getattr(self, "_singer_manager", None)
+        if sm is None:
+            return None
+        for idx, it in enumerate(self.queue):
+            user_str = it.get("user", "")
+            if sm.matches_queue_user(singer, str(user_str)):
+                song = self.queue.pop(idx)
+                self.ensure_item_qid(song)
+                self._last_popped_user_key = self._user_key(song["user"])
+                self._round_seen_user_keys.add(self._last_popped_user_key)
+                logging.info(
+                    "[LEI SAGRADA] Popped song FORCADO para o cantor da vez (ordem chegada): "
+                    "user=%s title=%s",
+                    str(song.get("user", "")),
+                    str(song.get("title", ""))[:120],
+                )
+                return song
+        return None
 
     def queue_edit(self, song_path: str, action: str) -> bool:
         """Move or remove a song in the queue. Action: 'up', 'down', or 'delete'."""

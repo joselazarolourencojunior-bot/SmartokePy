@@ -66,6 +66,9 @@ class Karaoke:
 
     now_playing_notification: str | None = None
     volume: float
+    # Throttle para nao spammar tela de notificacao da "Vez Sagrada bloqueada"
+    # (maximo uma notificacao por 10s quando o cantor da vez nao tem musica)
+    _vez_sagrada_last_block_notif: float = 0.0
 
     qr_code_path: str | None = None
     base_path: str = os.path.dirname(__file__)
@@ -374,6 +377,7 @@ class Karaoke:
             get_now_playing_user=lambda: self.playback_controller.now_playing_user,
             filename_from_path=self.song_manager.display_name_from_path,
             get_available_songs=lambda: self.song_manager.songs,
+            singer_manager=self.singer_manager,
         )
 
         # Initialize and start download manager
@@ -723,9 +727,56 @@ class Karaoke:
                         self.handle_run_loop()
                         i += self.loop_interval
 
-                    # Pop song before playback to avoid UI flicker
-                    song = self.queue_manager.pop_next()
+                    # ============================================================
+                    # [LEI ABSOLUTA VEZ SAGRADA - NUNCA MAIS PULA ORDEM DE CHEGADA]
+                    # A ORDEM DE CHEGADA DOS CANTORES (#1, #2, #3, #4) É A LEI.
+                    # SÓ a música do CANTOR DA VEZ pode tocar AGORA.
+                    # Se o cantor da vez NÃO TEM NENHUMA MÚSICA NA FILA:
+                    #  → NINGUÉM toca (mesmo que o resto da lista tenha 100 músicas).
+                    #  → Sistema bloqueia e CHAMA o cantor obrigatório URGENTE.
+                    # ============================================================
+                    _sm = getattr(self, "singer_manager", None)
+                    song = None
+                    _prox_cantor_nome_display = ""
+                    _cantor_bloqueado_sem_musica = False
+                    if _sm is not None:
+                        _nowu = getattr(self.playback_controller, "now_playing_user", None)
+                        _qit = list(getattr(self.queue_manager, "queue", []) or [])
+                        _prox_cantor, _prox_nome = _sm.get_next_singer_that_should_sing_now(
+                            _nowu, _qit
+                        )
+                        if _prox_cantor is not None:
+                            _prox_cantor_nome_display = str(_prox_nome)
+                            song = self.queue_manager.pop_next_only_for_singer(_prox_cantor)
+                            if song is None:
+                                # ☠️ BLOQUEIO TOTAL: cantor da vez NÃO TEM MÚSICA.
+                                # Ninguém toca, nem se o resto tem 10 músicas.
+                                _cantor_bloqueado_sem_musica = True
+                    # FALLBACK: se não tem singer manager, ou nenhum cantor cadastrado
+                    # (ex: sistema só usando fila randomizer / Pikaraoke antigo normal)
+                    if song is None and not _cantor_bloqueado_sem_musica:
+                        song = self.queue_manager.pop_next()
                     if not song:
+                        if _cantor_bloqueado_sem_musica and _prox_cantor_nome_display:
+                            # ===== NOTIFICAO URGENTE (throttled 10s max, nao spamma) =====
+                            agora = time.time()
+                            _ult = float(getattr(self, "_vez_sagrada_last_block_notif", 0.0))
+                            if (agora - _ult) >= 10.0:
+                                self._vez_sagrada_last_block_notif = agora
+                                msg_urg = (
+                                    f"🚨🚨🚨 [VEZ SAGRADA BLOQUEADA] A PRÓXIMA VEZ É DE: "
+                                    f"'{_prox_cantor_nome_display}' (ordem de chegada). "
+                                    f"ELE/AINDA NÃO ADICIONOU NENHUMA MÚSICA! "
+                                    f"⚠️ NINGUÉM VAI CANTAR ATÉ QUE '{_prox_cantor_nome_display}' "
+                                    f"ADICIONE UMA MÚSICA OU CLIQUE EM 'PULAR RODADA'. "
+                                    f"Não adianta os outros cantores adicionarem música antes: "
+                                    f"o sistema OBEDECE A ORDEM DE CHEGADA SEMPRE."
+                                )
+                                self.log_and_send(msg_urg, "danger")
+                                try: self.events.emit("queue_update")
+                                except Exception: pass
+                                try: self.events.emit("now_playing_update")
+                                except Exception: pass
                         continue
                     # ============== CORRECAO TELA ATUALIZAR NA HORA (JUNIOR SIMONE REFRESH) ==============
                     # Pop_next REMOVEU a 1a musica da fila para agora tocar. A ORDEM DA FILA MUDOU!

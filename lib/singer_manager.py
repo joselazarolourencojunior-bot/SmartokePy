@@ -311,6 +311,137 @@ class SingerManager:
             return None
         return self.update_status(s.singer_id, STATUS_SUNG)
 
+    # ======================================================================================
+    # [LEI ABSOLUTA - VEZ SAGRADA 1→2→3→4→1→2→3→4]
+    # Nenhum cantor NUNCA, NUNCA toca antes de quem chegou primeiro, INDEPENDENTEMENTE
+    # da ordem que adicionaram música na fila real.
+    # Ex: Junior #1 chegou 09:48, Simone #2 16:26, Maria #3 16:49, Joao #4 16:49.
+    # Se Joao #4 adicionar 10 musicas AGORA e Junior #1 ainda nao tem nenhuma →
+    # JOAO #4 NAO TOCA. SISTEMA BLOQUEIA e CHAMA JUNIOR #1. So ele toca primeiro.
+    # ======================================================================================
+
+    def matches_queue_user(self, singer: Optional[Singer], queue_user: str) -> bool:
+        """Retorna True SE E SOMENTE SE o user da fila REAL (queue item.user) combina
+        com o Singer paralelo: nome batendo OU algum alias (apelido) cadastrado batendo.
+        Normaliza ambos os lados: sem acentos, lowercase, espacos extras, mesa prefixado.
+        Nao combina nunca com system users (randomizer/pikaraoke etc)."""
+        if singer is None or not queue_user:
+            return False
+        qn = _normalize_name(str(queue_user))
+        if not qn or qn in IGNORED_SYSTEM_USERS:
+            return False
+        if _normalize_name(singer.name) == qn:
+            return True
+        for alia in (singer.aliases or []):
+            if _normalize_name(str(alia)) == qn:
+                return True
+        return False
+
+    def get_next_singer_that_should_sing_now(
+        self,
+        now_playing_user: str | None,
+        queue_items: list | None,
+    ) -> tuple[Optional[Singer], str]:
+        """LEI ABSOLUTA: retorna QUEM é o PRÓXIMO cantor na ORDEM VISUAL DE CHEGADA
+        que DEVE cantar AGORA. NÃO IMPORTA quem já tem música na fila real em primeiro.
+        SÓ IMPORTA a ordem de chegada 1→2→3→4 + regras de rodada (pular skipping/left_early,
+        GRUPO1 ainda não cantou, GRUPO2 nova rodada CIRCULAR depois do now).
+
+        Usado para: (1) obrigar o queue_manager a tocar SOMENTE música desse cantor,
+        (2) se o cantor não tem nenhuma música na fila real, NINGUÉM toca (bloqueio
+        total, chamada URGENTE para ele escolher música).
+
+        Returns:
+            (Singer | None, nome_display_para_log)."""
+        with self._lock:
+            all_singers_list = list(self._singers) if isinstance(self._singers, list) else list(getattr(self._singers, "values", lambda: [])())
+            all_singers_visual_order = sorted(
+                all_singers_list,
+                key=lambda s: s.arrival_visual_unix
+            )
+            _by_id: dict[str, Singer] = {}
+            for s in all_singers_visual_order:
+                try: _by_id[str(s.singer_id)] = s
+                except Exception: pass
+            if not all_singers_visual_order:
+                return (None, "")
+
+            now_singer_id: str | None = None
+            if now_playing_user:
+                s_now = self.find_singer_by_queue_user(str(now_playing_user))
+                if s_now is not None:
+                    now_singer_id = s_now.singer_id
+
+            # === MESMA LOGICA do refresh_statuses_from_queue (imune a bugs de SUNG fantasma) ===
+            def _ainda_nao_cantou_rodada(s: Singer) -> bool:
+                if now_singer_id and s.singer_id == now_singer_id:
+                    return True
+                return s.status not in (STATUS_SUNG, STATUS_SKIPPING, STATUS_LEFT_EARLY)
+
+            # (1) ORDEM VISUAL SAGRADA: arrival_visual_unix CRESCENTE (1,2,3,4 - NUNCA MUDA).
+            # (2) GRUPO 1 PRIORIDADE MAX: Ainda nao cantou nesta rodada.
+            #     → PRIMEIRO deste grupo, ORDEM VISUAL, PULANDO o now + pulando SKIPPING.
+            next_singer_id_rodada: str | None = None
+            for s in all_singers_visual_order:
+                if now_singer_id and s.singer_id == now_singer_id:
+                    continue
+                if s.status in (STATUS_LEFT_EARLY,):
+                    continue
+                if s.status in (STATUS_SKIPPING,):
+                    continue
+                if _ainda_nao_cantou_rodada(s):
+                    next_singer_id_rodada = s.singer_id
+                    break
+            # (3) GRUPO 2 (Soh se GRUPO1 VAZIO = TODOS JA CANTARAM DE VERDADE: NOVA RODADA CIRCULAR).
+            if not next_singer_id_rodada:
+                now_visual_idx: int | None = None
+                for i, s in enumerate(all_singers_visual_order):
+                    if now_singer_id and s.singer_id == now_singer_id:
+                        now_visual_idx = i
+                        break
+                # (3a) Primeiro SUNG DEPOIS do now na ordem visual (ignora SKIPPING e LEFT_EARLY)
+                found: str | None = None
+                for i, s in enumerate(all_singers_visual_order):
+                    if now_singer_id and s.singer_id == now_singer_id:
+                        continue
+                    if s.status in (STATUS_LEFT_EARLY, STATUS_SKIPPING):
+                        continue
+                    if now_visual_idx is not None and i <= now_visual_idx:
+                        continue
+                    if s.status in (STATUS_SUNG,):
+                        found = s.singer_id
+                        break
+                if not found:
+                    # (3b) ninguem depois → volta pro começo da lista (nova rodada)
+                    for i, s in enumerate(all_singers_visual_order):
+                        if now_singer_id and s.singer_id == now_singer_id:
+                            continue
+                        if s.status in (STATUS_LEFT_EARLY, STATUS_SKIPPING):
+                            continue
+                        if s.status in (STATUS_SUNG,):
+                            found = s.singer_id
+                            break
+                next_singer_id_rodada = found
+
+            # Fallback: se GRUPO1 nao tinha ninguem por causa de SKIPPING, agora
+            # TENTA INCLUIR os SKIPPING com menor prioridade (nao tem mais ninguem hoje).
+            # Nao inclui LEFT_EARLY nunca.
+            if not next_singer_id_rodada:
+                for s in all_singers_visual_order:
+                    if now_singer_id and s.singer_id == now_singer_id:
+                        continue
+                    if s.status in (STATUS_LEFT_EARLY,):
+                        continue
+                    next_singer_id_rodada = s.singer_id
+                    break
+            if not next_singer_id_rodada:
+                return (None, "")
+
+            next_singer = _by_id.get(str(next_singer_id_rodada))
+            if next_singer is None:
+                return (None, "")
+            return (next_singer, str(next_singer.name))
+
     def refresh_statuses_from_queue(self, queue_items: list,
                                     now_playing_user: Optional[str] = None,
                                     next_user: Optional[str] = None) -> dict:
