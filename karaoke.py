@@ -283,23 +283,114 @@ class Karaoke:
             except Exception as exc:
                 logging.debug("[FASE2] refresh_statuses_from_queue falhou: %s", exc)
 
-        def _fase2_mark_singer_sung_now():
+        # [V32 FIX BUG FINAL 13/08 13:12]
+        # RACE CONDITION MATOU a marcação SUNG por 3 dias:
+        # Quando a música ACABA DE VERDADE, o playback_controller faz em ORDEM:
+        #   1) ZERA now_playing_user = None
+        #   2) EMITE evento "song_ended"
+        # Então no callback _fase2_mark_singer_sung_now() → agora user=None →
+        # NÃO MARCA NINGUÉM COMO SUNG! → Junior fica sem rounds_sung, sem
+        # teve_vez, sem SET infalível → de volta para GRUPO 1 como #1 visual,
+        # volta a ser o "próximo de novo", e Simone nunca tem vez.
+        #
+        # SOLUÇÃO V32: Guardar sempre aqui em cache (self._fase2_last_sung_user_cache)
+        # o ÚLTIMO now_playing_user VÁLIDO que passou por aqui. Quando song_ended
+        # vier e o playback disser user=None, usamos este último valor salvo —
+        # ele é sempre o cantor que ACABOU de tocar, 100% garantido.
+        # Atualizamos esse cache EM TODOS os eventos que sabem quem está tocando:
+        # playback_started e now_playing_update (se o user novo não for None).
+        self._fase2_last_sung_user_cache: str | None = None
+        def _fase2_atualizar_cache_user_valido() -> None:
+            try:
+                pu = getattr(self.playback_controller, "now_playing_user", None)
+                if pu and str(pu).strip():
+                    self._fase2_last_sung_user_cache = str(pu).strip()
+            except Exception:
+                pass
+
+        def _fase2_mark_singer_sung_now(event_payload=None):
+            # [V36 - CORRECAO BUG 14:20 MUSICA PAROU NA METADE - MARCA SUNG ERRADO]
+            #
+            # Antes V32-V35: song_ended SEMPRE marcava SUNG, mesmo que a música
+            # tivesse parado na metade por: stale_stream / watchdog_stuck_position /
+            # start_timeout / corrompida / ffmpeg crash / etc.
+            #
+            # Consequencia ruim: cantor ganhou rounds_sung++, teve_vez_nesta_rodada
+            # True, ID no SET infalível → ele PASSOU na rodada e nunca mais tem
+            # vez nesta rodada, mesmo que ele não tenho cantado NADA de verdade!
+            #
+            # SOLUCAO V36: só marcar SUNG (teve vez de verdade) se o reason do
+            # song_ended for um destes 2 motivos "deu a vez ao cantor":
+            #   (A) reason == "complete"  → música acabou NATURALMENTE (último segundo)
+            #   (B) reason == "skip"      → usuário clicou MANUALMENTE em pular/avançar
+            #                                 (ele estava lá, teve sua vez de verdade)
+            # Todos os outros motivos (parou na metade, travou, rede caiu) → NÃO
+            # marca SUNG, NÃO zera cache, só refresh de fila normal. O cantor
+            # continua no GRUPO1 → automaticamente ele é o "PRÓXIMO" de novo
+            # (ordem sagrada, ele nao passou), e pode escolher outra música ou
+            # re-tentar a mesma.
+            reason_end = "unknown"
+            try:
+                if isinstance(event_payload, dict) and str(event_payload.get("reason") or "").strip():
+                    reason_end = str(event_payload["reason"]).strip().lower()
+            except Exception:
+                pass
+            pode_marcar_como_sung = (reason_end in ("complete", "skip"))
             try:
                 sm = self.singer_manager
                 if not sm:
                     return
                 user = getattr(self.playback_controller, "now_playing_user", None)
+                # [V32 BLOCO CORREÇÃO]
+                # Se playback já tiver zerado user (acontece sempre, race condition),
+                # cai no CACHE do último user válido que estava tocando.
+                if not user and getattr(self, "_fase2_last_sung_user_cache", None):
+                    from copy import copy
+                    user = copy(self._fase2_last_sung_user_cache)
+                    logging.info(
+                        "[FASE2 V32 FALLBACK OK] now_playing_user ja estava None (zerado pelo controller), usando cache do ultimo user tocando = %r",
+                        user,
+                    )
                 if user:
-                    singer = sm.mark_singer_sung_by_queue_user(str(user))
-                    if singer is not None:
-                        logging.info(
-                            "[FASE2 AUTOMATICO] musica comecou -> cantor marcado sung e "
-                            "movido pro fim: %s (user_fila=%s)",
-                            singer.name, str(user)
+                    if pode_marcar_como_sung:
+                        singer = sm.mark_singer_sung_by_queue_user(str(user))
+                        if singer is not None:
+                            logging.info(
+                                "[FASE2 AUTOMATICO FIM MUSICA V36] music acabou (reason=%r) -> cantor marcado SUNG: %s (user_fila=%r)",
+                                reason_end, singer.name, str(user),
+                            )
+                            # [V32] Após marcar SUNG com sucesso: ZERA o cache (evita
+                            # marcar o mesmo user duas vezes em caso de double emit).
+                            try:
+                                self._fase2_last_sung_user_cache = None
+                            except Exception:
+                                pass
+                            _fase2_refresh_singer_statuses_from_queue()
+                        else:
+                            logging.warning(
+                                "[FASE2 V36] user %r nao casou com nenhum Singer paralelo (nao atualizou SUNG). pode_marcar=True, reason=%r, cache? %r",
+                                str(user), reason_end, getattr(self, "_fase2_last_sung_user_cache", None)
+                            )
+                    else:
+                        # [V36 - MUSICA PAROU NA METADE / ERRO QUALQUER]
+                        # NÃO MARCA SUNG. Apenas damos um log WARNING avisando,
+                        # refresh status (para o banner continuar apontando ele),
+                        # e NÃO ZERA o cache.
+                        logging.warning(
+                            "[FASE2 V36 BOM: NAO MARCOU SUNG!] musica acabou prematuramente (reason=%r). Cantor=%r CONTINUA NO GRUPO1 desta rodada, sera o proximo de novo para tentar outra musica ou a mesma."
+                            " (Nao ganhou rounds_sung, nao marcou teve_vez, nao entrou no SET infalivel).",
+                            reason_end, str(user),
                         )
                         _fase2_refresh_singer_statuses_from_queue()
+                else:
+                    logging.warning(
+                        "[FASE2 V36] sem user now_playing e cache também vazio. nao marca SUNG de ninguem. reason=%r pode_marcar=%r",
+                        reason_end, bool(pode_marcar_como_sung)
+                    )
             except Exception as exc:
                 logging.debug("[FASE2] mark_singer_sung_now falhou: %s", exc)
+                import traceback as _tb
+                _tb.print_exc()
 
         # Event bridging: the coordinator wires manager events to the UI (SocketIO/notifications).
         self.events.on("notification", self.log_and_send)
@@ -319,8 +410,12 @@ class Karaoke:
             ) if self.socketio else None
         )
         self.events.on("now_playing_update", self.update_now_playing_socket)
+        # [V32 ATUALIZA CACHE ULTIMO USER TOCANDO - OBRIGATORIO]
+        self.events.on("now_playing_update", _fase2_atualizar_cache_user_valido)
         self.events.on("now_playing_update", _fase2_refresh_singer_statuses_from_queue)
         self.events.on("playback_started", self.update_now_playing_socket)
+        # [V32 ATUALIZA CACHE ULTIMO USER TOCANDO - OBRIGATORIO]
+        self.events.on("playback_started", _fase2_atualizar_cache_user_valido)
         # ============== CORRECAO BUG SEQUENCIA CANTORES (Simone → pula para Joao #4) ==============
         # ANTES ERRADO: playback_started disparava mark_singer_sung_now() → MARCAVA o cantor como
         # "ja cantou / fim da rodada" ANTES MESMO DE ELE COMECAR A CANTAR! Isso baguncava tudo:
@@ -711,41 +806,97 @@ class Karaoke:
         while self.running:
             try:
                 # Clean up if playback ended but state wasn't reset
+                # ============================================================
+                # [V50 CORRECAO RACE CONDITION FIM DE MUSICA - 13/08 18:12]
+                # O PLAYBACK zera is_playing=False ANTES de emitir "song_ended".
+                # A ordem SEMPRE era (ATE AGORA):
+                #   1) playback faz: is_playing=False  (sem evento nenhum ainda)
+                #   2) Run Loop roda neste intervalo de ~20ms: enxerga is_playing=False
+                #      -> chama get_next_singer_that_should_sing_now()
+                #      -> teve_vez_nesta_rodada DO JUNIOR AINDA ESTA False (pois o
+                #         evento song_ended NAO chegou, que e quem marcava!)
+                #      -> get_next retorna Junior de NOVO como proximo
+                #      -> pop_next_only_for_singer(Junior) pega 2a musica
+                #      -> TOCA A 2a MUSICA DO JUNIOR PULANDO SIMONE!!!
+                #   3) 20-50ms DEPOIS: evento "song_ended" finalmente chega, marca
+                #      teve_vez=True -> MAS E TARDE DEMAIS.
+                #
+                # CORRECAO V50 ABSOLUTA:
+                # ANTES de resetar now_playing (e de deixar o Run Loop ver
+                # is_playing=False e calcular proximo), nos MESMOS aqui no bloco
+                # de Clean Up, SE tiver now_playing_user VALIDO:
+                #   - Chama SingerManager.mark_teve_vez_RACE_QUICK_by_queue_user(user)
+                #   - MARCA TEVE_VEZ=TRUE + SET infalivel IMEDIATAMENTE,
+                #     ANTES que o Run Loop faca o proximo calculo de proximo.
+                # Assim, o proximo get_next() JA VAI VER Junior com teve_vez=True
+                # e NUNCA MAIS retorna ele de novo nesta rodada. Simone sempre e
+                # a proxima (ordem #2 chegada).
+                # ============================================================
+                _tem_sm_agora = bool(getattr(self, "singer_manager", None))
+                if _tem_sm_agora and not self.playback_controller.is_playing and (
+                    self.playback_controller.now_playing is not None
+                    or getattr(self, "_fase2_last_sung_user_cache", None)
+                ):
+                    _user_que_estava_tocando = getattr(
+                        self.playback_controller, "now_playing_user", None
+                    )
+                    if (
+                        not _user_que_estava_tocando
+                        and getattr(self, "_fase2_last_sung_user_cache", None)
+                    ):
+                        _user_que_estava_tocando = getattr(self, "_fase2_last_sung_user_cache", None)
+                    if _user_que_estava_tocando and str(_user_que_estava_tocando).strip():
+                        try:
+                            _u = str(_user_que_estava_tocando).strip()
+                            _sm_v50 = getattr(self, "singer_manager", None)
+                            if _sm_v50 is not None and hasattr(
+                                _sm_v50, "mark_teve_vez_RACE_QUICK_by_queue_user"
+                            ):
+                                _s = _sm_v50.mark_teve_vez_RACE_QUICK_by_queue_user(
+                                    _u,
+                                    reason="race-pre-reset-antes-run-loop"
+                                )
+                                if _s is not None:
+                                    logging.warning(
+                                        "[V50 RACE FIX PRE-RESET OK] "
+                                        "Cantor=%r user_fila=%r. teve_vez marcado "
+                                        "ANTES do reset_now_playing e ANTES do "
+                                        "proximo get_next. Nao toca 2a musica "
+                                        "deste cantor sem passar a vez.",
+                                        getattr(_s, "name", ""), _u
+                                    )
+                        except Exception as exc_v50:
+                            logging.warning(
+                                "[V50 RACE FIX PRE-RESET falhou (ignorado, "
+                                "nao trava o playback): %s", exc_v50
+                            )
+
                 if (
                     not self.playback_controller.is_playing
                     and self.playback_controller.now_playing is not None
                 ):
                     self.reset_now_playing()
 
-                # Start next song from queue if not currently playing
-                if len(self.queue_manager.queue) > 0 and not self.playback_controller.is_playing:
-                    self.reset_now_playing()
-                    # Splash delay between songs
-                    splash_delay = self.preferences.get_or_default("splash_delay")
-                    i = 0
-                    while i < (splash_delay * 1000):
-                        self.handle_run_loop()
-                        i += self.loop_interval
-
-                    # ============================================================
-                    # [LEI ABSOLUTA VEZ SAGRADA - NUNCA MAIS PULA ORDEM DE CHEGADA]
-                    # A ORDEM DE CHEGADA DOS CANTORES (#1, #2, #3, #4) É A LEI.
-                    # SÓ a música do CANTOR DA VEZ pode tocar AGORA.
-                    # Se o cantor da vez NÃO TEM NENHUMA MÚSICA NA FILA:
-                    #  → NINGUÉM toca (mesmo que o resto da lista tenha 100 músicas).
-                    #  → Sistema bloqueia e CHAMA o cantor obrigatório URGENTE.
-                    #
-                    # MUDANÇA 2026-08-12 (opção usuário TRAVAR ATÉ ADICIONAR):
-                    # Regra 100% confirmada: NÃO PULA AUTOMATICAMENTE quem NÃO TEM música.
-                    # Trava tudo até o operador: (A) ADICIONAR MÚSICA para o cantor obrigatório
-                    # (match nome/aliases tem que estar certo!) OU (B) clicar em "Pular rodada"
-                    # no card daquele cantor. Assim que a música for adicionada, toca NA HORA.
-                    # ============================================================
-                    _sm = getattr(self, "singer_manager", None)
-                    song = None
-                    _prox_cantor_nome_display = ""
-                    _cantor_bloqueado_sem_musica = False
-                    if _sm is not None:
+                # ============================================================
+                # [LEI ABSOLUTA VEZ SAGRADA - NUNCA MAIS PULA ORDEM DE CHEGADA]
+                # A ORDEM DE CHEGADA DOS CANTORES (#1, #2, #3, #4) É A LEI.
+                # SÓ a música do CANTOR DA VEZ pode tocar AGORA.
+                # Se o cantor da vez NÃO TEM NENHUMA MÚSICA NA FILA:
+                #  → NINGUÉM toca (MESMO QUE A FILA TENHA 100 MÚSICAS DE OUTROS).
+                #  → Sistema bloqueia e CHAMA o cantor obrigatório URGENTE.
+                #
+                # ATENCAO 2026-08-13: ESTE BLOCO RODA SEMPRE QUE NAO ESTIVER
+                # TOCANDO, MESMO QUE len(fila)==0. Motivo: se Simone eh proxima
+                # obrigatoria e nao tem musica, mesmo com fila vazia o sistema
+                # PRECISA TRAVAR e chamar ela, nao ficar silencioso.
+                # ============================================================
+                _sm = getattr(self, "singer_manager", None)
+                song = None
+                _prox_cantor_nome_display = ""
+                _cantor_bloqueado_sem_musica = False
+                _tem_sm_ativo = (_sm is not None and len(getattr(_sm, "_singers", []) or []) > 0)
+                if not self.playback_controller.is_playing:
+                    if _tem_sm_ativo:
                         _nowu = getattr(self.playback_controller, "now_playing_user", None)
                         _qit = list(getattr(self.queue_manager, "queue", []) or [])
                         _prox_cantor, _prox_nome = _sm.get_next_singer_that_should_sing_now(
@@ -763,29 +914,25 @@ class Karaoke:
                             )
                             song = self.queue_manager.pop_next_only_for_singer(_prox_cantor)
                             if song is None:
-                                # ☠️ BLOQUEIO TOTAL CONFIRMADO: cantor da vez NAO TEM MUSICA.
-                                # Motivo 99%: OU realmente nao adicionou nenhuma musica dele;
-                                # OU adicionou mas com user string NOME DIFERENTE do nome/aliases
-                                # do card do cantor (falta linkar alias). O warning do
-                                # pop_next_only_for_singer ja logou todos users da fila vs nome/aliases
-                                # dele pro operador comparar e corrigir.
                                 _cantor_bloqueado_sem_musica = True
-                    # FALLBACK: se não tem singer manager, ou nenhum cantor cadastrado
-                    # (ex: sistema só usando fila randomizer / Pikaraoke antigo normal)
-                    if song is None and not _cantor_bloqueado_sem_musica:
-                        song = self.queue_manager.pop_next()
+                    # FALLBACK: se NÃO TEM singer manager (modo pikaraoke antigo)
+                    # → usa a ordem NORMAL da fila real.
+                    # CORRECAO 13/08: QUANDO TEM SM_ATIVO, NAO TEM MAIS FALLBACK
+                    # pop_next()! Nunca mais pula ordem de chegada.
+                    if not _tem_sm_ativo and song is None and not _cantor_bloqueado_sem_musica:
+                        if len(self.queue_manager.queue) > 0:
+                            song = self.queue_manager.pop_next()
+
+                    # ===== BLOQUEIO (se nao tem musica) =====
                     if not song:
                         if _cantor_bloqueado_sem_musica and _prox_cantor_nome_display:
-                            # ===== NOTIFICAO URGENTE (throttled 10s max, nao spamma) =====
+                            # NOTIFICAO URGENTE throttled 10s
                             agora = time.time()
                             _ult = float(getattr(self, "_vez_sagrada_last_block_notif", 0.0))
                             if (agora - _ult) >= 10.0:
                                 self._vez_sagrada_last_block_notif = agora
                                 _fila_qtd = len(getattr(self.queue_manager, "queue", []) or [])
                                 if _fila_qtd > 0:
-                                    # Caso SUPER COMUM de bug que trava e usuario chora:
-                                    # tem musica na fila MAS NENHUMA DO CANTOR OBRIGATORIO
-                                    # (nome errado / falta alias). Mostra dica especifica.
                                     msg_urg = (
                                         f"🚨🚨🚨 [VEZ SAGRADA BLOQUEADA] A PRÓXIMA VEZ É DE: "
                                         f"'{_prox_cantor_nome_display}' (ordem de chegada). "
@@ -801,7 +948,7 @@ class Karaoke:
                                     msg_urg = (
                                         f"🚨🚨🚨 [VEZ SAGRADA BLOQUEADA] A PRÓXIMA VEZ É DE: "
                                         f"'{_prox_cantor_nome_display}' (ordem de chegada). "
-                                        f"ELE/AINDA NÃO ADICIONOU NENHUMA MÚSICA! "
+                                        f"ELE/ELA AINDA NÃO ADICIONOU NENHUMA MÚSICA! "
                                         f"⚠️ NINGUÉM VAI CANTAR ATÉ QUE '{_prox_cantor_nome_display}' "
                                         f"ADICIONE UMA MÚSICA OU CLIQUE EM 'PULAR RODADA' no card dele. "
                                         f"Não adianta os outros cantores adicionarem música antes: "
@@ -813,20 +960,27 @@ class Karaoke:
                                 try: self.events.emit("now_playing_update")
                                 except Exception: pass
                                 logging.error(msg_urg)
+                        # Proxima iteracao do loop (nao toca nada, trava aguardando)
+                        self.playback_controller.log_output()
+                        self.handle_run_loop()
                         continue
-                    # ============== CORRECAO TELA ATUALIZAR NA HORA (JUNIOR SIMONE REFRESH) ==============
-                    # Pop_next REMOVEU a 1a musica da fila para agora tocar. A ORDEM DA FILA MUDOU!
-                    # Dispara evento queue_update para TODOS clientes socket.io receberem ATUALIZACAO
-                    # NA HORA (ex: pagina Fila do operador). Nao esperar polling de 1.5~2s para atualizar,
-                    # senao o operador chama a pessoa ERRADA durante esses segundos!
+
+                # ============== TEM MUSICA (song != None): VAI TOCAR AGORA ==============
+                if song is not None and not self.playback_controller.is_playing:
+                    self.reset_now_playing()
+                    # Splash delay between songs
+                    splash_delay = self.preferences.get_or_default("splash_delay")
+                    i = 0
+                    while i < (splash_delay * 1000):
+                        self.handle_run_loop()
+                        i += self.loop_interval
+
+                    # Avisa clientes que pop_next removeu 1a musica
                     try: self.events.emit("queue_update")
                     except Exception: pass
+
                     t0 = time.time()
                     # ====== [V9 CAMADA DUPLA DE SEGURANÇA - BACKUP] ======
-                    # Mesmo que queue_manager.enqueue bloqueou, alguem pode ter add via
-                    # chamada direta ou arquivo foi apagado ENTRE enqueue e play.
-                    # Reforço: se arquivo nao existe, NOTIFICA e NAO TOCA (não passa
-                    # adiante p/ watchdogs p/ nao gerar pulo confuso).
                     song_file = str(song.get("file") or "")
                     ok_e, msg_e, resolved_p = QueueManager.validate_song_file_exists(song_file)
                     if not ok_e:
@@ -846,17 +1000,15 @@ class Karaoke:
                             ),
                             "danger",
                         )
-                        # Emite notification UI tambem
                         try:
                             self.events.emit("notification", msg_e, "danger")
                         except Exception:
                             pass
-                        # Cancela essa música silenciosamente. Não toca, não trava, não pula (já "skipou").
-                        # Atualiza queue/now_playing para UI refletir que acabou de "passar".
                         self.events.emit("queue_update")
                         self.events.emit("now_playing_update")
+                        self.playback_controller.log_output()
+                        self.handle_run_loop()
                         continue
-                    # (opcional) substituir path resolvido no dict p/ play_file usar
                     if resolved_p:
                         song["file"] = resolved_p
                         song_file = resolved_p
@@ -876,20 +1028,13 @@ class Karaoke:
                             "[LATENCIA QUEUE -> PLAYBACK START] %s | user=%s | total %.0fms",
                             song["file"].split("/")[-1], song["user"], lat_ms
                         )
-                    # ============== CORRECAO TELA ATUALIZAR NA HORA (JUNIOR SIMONE REFRESH) ==============
-                    # AGORA a musica comecou (ou falhou pra iniciar) = O NOW PLAYING MUDOU!
-                    # A pagina Fila mostra quem esta cantando AGORA (1a linha) e a ORDEM de quem vem
-                    # depois. Dispara TODOS os eventos possiveis de socket.io para TODOS navegadores
-                    # conectados receberem ATUALIZACAO NA HORA, sem precisar esperar polling.
-                    # Sem isso, o operador fica 1~2s com tela antiga e chama pessoa ERRADA!
+                    # Atualiza UI NA HORA (agora que mudou o now playing)
                     try: self.events.emit("now_playing")
                     except Exception: pass
                     try: self.events.emit("now_playing_update")
                     except Exception: pass
                     try: self.events.emit("queue_update")
                     except Exception: pass
-                    # Apos iniciar uma musica, forca um refresh completo da janela na proxima iteracao
-                    # (agora queue mudou porque demos pop_next()).
                     last_window_signature: tuple | None = None
 
                 # --- NOVO: Mantem JANELA DE 5 PRELOADS sempre atualizada ---

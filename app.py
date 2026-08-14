@@ -50,6 +50,7 @@ from pikaraoke.routes.now_playing import nowplaying_bp
 from pikaraoke.routes.preferences import preferences_bp
 from pikaraoke.routes.queue import queue_bp
 from pikaraoke.routes.search import search_bp
+from pikaraoke.routes.singers import singers_bp
 from pikaraoke.routes.socket_events import setup_socket_events
 from pikaraoke.routes.splash import splash_bp
 from pikaraoke.routes.stream import stream_bp
@@ -112,6 +113,7 @@ _internal_blueprints = [
     network_maestro_bp,
     splash_bp,
     batch_song_renamer_bp,
+    singers_bp,
 ]
 
 if wifi_setup_bp is not None:

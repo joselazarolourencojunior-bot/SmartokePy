@@ -383,6 +383,16 @@
 		$("#add-queue-link").on("click", function (e) {
 			e.preventDefault();
 			if ($(".search-selectize").find(":selected").text()) {
+				// ============== CORRECAO BUG Junior-Simone ==============
+				// NAO confia no valor do input hidden .song_added_by (que pode ser antigo Simone se
+				// usuario mudou para Junior DEPOIS que a pagina Search carregou sem reload).
+				// Pega DIRETAMENTE o valor ATUAL do cookie user (igual a navbar mostra) e GRAVA no input
+				// hidden a CADA CLIQUE antes de enviar para backend. Garantia dupla.
+				var userAtual = (typeof Cookies !== "undefined") ? (Cookies.get("user") || "") : "";
+				if (userAtual) {
+					$(".song_added_by").val(userAtual);
+					$("input[name='song_added_by']").val(userAtual);
+				}
 				$("#add-queue-link").attr("disabled", "true");
 				$("#add-queue-link").addClass("is-loading");
 				setTimeout(function () {
@@ -404,6 +414,37 @@
 				});
 			}
 		});
+
+		// ============== CORRECAO BUG Junior-Simone ==============
+		// Se o usuario for trocado DEPOIS que a pagina Search foi carregada (ex: clicou no nome
+		// Simone na navbar, selecionou Junior), atualiza TAMBEM o input hidden aqui na pagina.
+		// Camada EXTRA de garantia alem do updateCurrentUserDisplay() global em base.html.
+		try {
+			if (window.jQuery) {
+				jQuery(window).on("userchanged", function(ev, data){
+					try {
+						var u = (data && data.user) ? data.user : "";
+						if (!u && ev && ev.detail && typeof ev.detail === "object") u = ev.detail.user || "";
+						if (u) {
+							jQuery(".song_added_by").val(u);
+							jQuery("input[name='song_added_by']").val(u);
+						}
+					} catch(_){}
+				});
+			}
+			// nativo (addEventListener) tambem:
+			if (window.addEventListener) {
+				window.addEventListener("userchanged", function(ev){
+					try {
+						var u = (ev && ev.detail && typeof ev.detail === "object") ? (ev.detail.user || "") : "";
+						if (u) {
+							var allInputs = document.querySelectorAll("input.song_added_by, input[name='song_added_by']");
+							for (var i = 0; i < allInputs.length; i++) allInputs[i].value = u;
+						}
+					} catch(_){}
+				});
+			}
+		} catch(_){}
 
 		//END SELECTIZE CHANGES
 
@@ -450,8 +491,9 @@
 		});
 
 		setUserCookie(); // Don't reload page after setting cookie
-
-		$(".song_added_by").val(getUserCookie());
+		withUserCookie(function(user){
+			$(".song_added_by").val(user);
+		});
 
 		// Restore checkbox states from cookies
 		restoreCheckboxStates();
@@ -475,34 +517,36 @@
 		function downloadSong(songUrl, songTitle, button) {
 			var $btn = $(button);
 			var originalText = $btn.html();
-			$btn.css("min-width", $btn.outerWidth() + "px");
-			$btn.addClass("is-loading").attr("disabled", true);
-			$.ajax({
-				url: "{{ url_for('search.download') }}",
-				type: "POST",
-				contentType: "application/json",
-				data: JSON.stringify({
-					song_url: songUrl,
-					song_title: songTitle || "",
-					song_added_by: getUserCookie() || "",
-					queue: $("#add-to-queue-search").is(":checked"),
-				}),
-				success: function () {
-					$btn.removeClass("is-loading").addClass("is-success")
-						.html('<i class="icon icon-ok"></i>');
-					setTimeout(function () {
-						$btn.removeClass("is-success").html(originalText)
-							.removeAttr("disabled").css("min-width", "");
-					}, 3000);
-				},
-				error: function () {
-					$btn.removeClass("is-loading").addClass("is-danger")
-						.text("!");
-					setTimeout(function () {
-						$btn.removeClass("is-danger").html(originalText)
-							.removeAttr("disabled").css("min-width", "");
-					}, 3000);
-				},
+			withUserCookie(function(user){
+				$btn.css("min-width", $btn.outerWidth() + "px");
+				$btn.addClass("is-loading").attr("disabled", true);
+				$.ajax({
+					url: "{{ url_for('search.download') }}",
+					type: "POST",
+					contentType: "application/json",
+					data: JSON.stringify({
+						song_url: songUrl,
+						song_title: songTitle || "",
+						song_added_by: user || "",
+						queue: $("#add-to-queue-search").is(":checked"),
+					}),
+					success: function () {
+						$btn.removeClass("is-loading").addClass("is-success")
+							.html('<i class="icon icon-ok"></i>');
+						setTimeout(function () {
+							$btn.removeClass("is-success").html(originalText)
+								.removeAttr("disabled").css("min-width", "");
+						}, 3000);
+					},
+					error: function () {
+						$btn.removeClass("is-loading").addClass("is-danger")
+							.text("!");
+						setTimeout(function () {
+							$btn.removeClass("is-danger").html(originalText)
+								.removeAttr("disabled").css("min-width", "");
+						}, 3000);
+					},
+				});
 			});
 		}
 

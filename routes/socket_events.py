@@ -1,6 +1,9 @@
 """Socket.IO event handlers for PiKaraoke."""
 
 import logging
+import os
+import shutil
+import subprocess
 from collections.abc import Mapping
 from typing import Any
 
@@ -11,6 +14,67 @@ from pikaraoke.lib.current_app import get_karaoke_instance
 # Track connected splash screen clients and the elected master
 splash_connections = set()
 master_splash_id = None
+
+# ---- helpers duracao real arquivo (V37: servidor NAO confia cegamente no front) ----
+_ffprobe_path_cache: str | None = None
+_duracao_cache: dict[str, tuple[float, float]] = {}  # path -> (duration_s, cache_at_unix)
+
+
+def _find_ffprobe() -> str | None:
+    """Encontra caminho do ffprobe (geralmente ao lado do ffmpeg)."""
+    global _ffprobe_path_cache
+    if _ffprobe_path_cache is not None:
+        return _ffprobe_path_cache
+    # 1) se temos ffmpeg binaria conhecida (via preferences depois), nao importa.
+    #    Tentar nomes comuns no PATH primeiro.
+    for name in ("ffprobe",):
+        p = shutil.which(name)
+        if p:
+            _ffprobe_path_cache = p
+            return p
+    _ffprobe_path_cache = ""
+    return None
+
+
+def _ffprobe_duration_safe(file_path: str) -> float | None:
+    """Retorna duracao REAL do arquivo fonte baixado em segundos.
+    Usa ffprobe. Fallback: tenta aproximar por metadata de arquivo se falhar.
+    """
+    if not file_path or not os.path.isfile(file_path):
+        return None
+    # cache 1h por arquivo (musica baixada nao muda, evita 2x ffprobe por musica)
+    try:
+        st = os.stat(file_path)
+    except OSError:
+        return None
+    key = f"{file_path}|{st.st_size}|{int(st.st_mtime)}"
+    now = st.st_ctime or __import__("time").time()
+    cached = _duracao_cache.get(key)
+    if cached and (now - cached[1]) < 3600:
+        return cached[0]
+    bin_path = _find_ffprobe()
+    if not bin_path:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                bin_path, "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if result.returncode == 0:
+            out = result.stdout.strip()
+            if out:
+                d = float(out)
+                if d > 0:
+                    _duracao_cache[key] = (d, now)
+                    return d
+    except Exception as exc:
+        logging.debug("ffprobe duration falhou %s: %s", file_path, exc)
+    return None
 
 
 def setup_socket_events(socketio):
@@ -35,8 +99,11 @@ def setup_socket_events(socketio):
         genuine end-of-song event.
         """
         k = get_karaoke_instance()
-
         reason = None
+        position: float | None = None
+        duration: float | None = None
+        ffmpeg_running = False
+
         if isinstance(payload, Mapping):
             reason = payload.get("reason")
             position = _parse_float(payload.get("position"))
@@ -77,6 +144,80 @@ def setup_socket_events(socketio):
                 logging.info(f"Splash client requested end_song: {dict(payload)}")
         else:
             reason = payload
+
+        # =================================================================
+        # V37: VALIDACAO FINAL SERVER-SIDE (NAO CONFIA CEGAMENTE NO FRONT)
+        # Se arquivo fonte (baixado) EXISTE e front disse que acabou ("complete"),
+        #   checar a DURACAO REAL DO ARQUIVO com ffprobe. Se a posicao atual
+        #   (do payload ou do now_playing_position do playback) for MENOR que
+        #   (duracao_real - 30s) → NAO PODE ACABOU! Front estava mentindo por
+        #   causa de metadata HLS errada / duration NaN / Chrome bug.
+        # =================================================================
+        try:
+            pc = k.playback_controller
+            if position is None:
+                np_pos = getattr(pc, "now_playing_position", None)
+                try:
+                    position = float(np_pos) if np_pos is not None else None
+                except (TypeError, ValueError):
+                    position = None
+            source_fn = getattr(pc, "now_playing_filename", None)
+            source_exists = bool(source_fn and os.path.isfile(str(source_fn)))
+            if not ffmpeg_running:
+                ffmpeg_running = bool(
+                    getattr(pc, "ffmpeg_process", None) is not None
+                    and getattr(pc.ffmpeg_process, "poll", lambda: None)() is None
+                )
+
+            reason_str = str(reason or "").strip().lower()
+            front_says_complete = (
+                reason_str == "complete"
+                or reason_str == ""
+                or reason_str == "unknown"
+            )
+            if source_exists and front_says_complete:
+                dur_real = _ffprobe_duration_safe(str(source_fn))
+                if dur_real is not None and dur_real > 0:
+                    pos_comp = float(position) if position is not None else 0.0
+                    # margem 30s: se o front disse que acabou e estamos a mais de
+                    # 30s do final REAL do arquivo baixado → INCOMPLETO!
+                    if pos_comp < (dur_real - 30.0):
+                        if ffmpeg_running:
+                            # FFmpeg vivo: musica NAO acabou. Pedir retry no
+                            # front (continuar do ponto atual), NAO chamar end_song.
+                            logging.warning(
+                                "[V37 BOM: BLOQUEAMOS ENCERRAMENTO!] "
+                                "front disse reason='complete' mas musica nao acabou! "
+                                "FFmpeg ainda RODANDO. "
+                                "pos=%.0fs duration_real_ffprobe=%.0fs falta=%.0fs. "
+                                "file=%s. Pedindo retry no splash.",
+                                pos_comp, dur_real, max(0.0, dur_real - pos_comp),
+                                str(source_fn)[-80:],
+                            )
+                            socketio.emit(
+                                "retry_current_song",
+                                {
+                                    "position": max(pos_comp - 1, 0),
+                                    "reason": "server-ffprobe-ffmpeg-running",
+                                },
+                            )
+                            return
+                        # FFmpeg MORREU mas arquivo existe e posicao < final -30s.
+                        # → musica parou na metade! Nao marcar complete, marcar
+                        #   como erro.
+                        new_reason = (
+                            f"server-ffprobe-detected-incomplete "
+                            f"({pos_comp:.0f}/{dur_real:.0f}s)"
+                        )
+                        logging.warning(
+                            "[V37 BOM: TROCAMOS REASON!] front disse '%s' mas "
+                            "musica incompleta (ffmpeg MORREU no meio). "
+                            "Novo reason=%r | file=%s",
+                            reason, new_reason, str(source_fn)[-80:],
+                        )
+                        reason = new_reason
+        except Exception as exc_v37:
+            logging.warning("[V37 ffprobe check falhou, continuando mesmo assim]: %s", exc_v37)
 
         k.playback_controller.end_song(reason)
 

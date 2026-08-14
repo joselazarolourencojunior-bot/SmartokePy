@@ -21,7 +21,9 @@
       queue: [],
       previousQueue: null,
       nowPlaying: null,
-      previousNowPlaying: null
+      previousNowPlaying: null,
+      preload: null,
+      previousPreloadSig: null,
     };
   }
 
@@ -31,20 +33,24 @@
       return;
     }
 
-    // Fetch both queue and now_playing data
+    // Fetch queue, now_playing data AND preload status map (for LEDs)
     $.when(
       $.get('{{ url_for("queue.get_queue") }}'),
-      $.get('{{ url_for("now_playing.now_playing") }}')
-    ).done(function(queueResp, nowPlayingResp) {
+      $.get('{{ url_for("now_playing.now_playing") }}'),
+      $.get('{{ url_for("queue.preload_status_map") }}')
+    ).done(function(queueResp, nowPlayingResp, preloadResp) {
       var newQueue = JSON.parse(queueResp[0]);
       var newNowPlaying = nowPlayingResp[0] ? JSON.parse(nowPlayingResp[0]) : null;
+      var newPreload = preloadResp[0] ? JSON.parse(preloadResp[0]) : null;
 
       var queueChanged = !isEqual(newQueue, window.queuePageState.previousQueue);
       var npChanged = !isEqual(newNowPlaying, window.queuePageState.previousNowPlaying);
+      var preChanged = _preloadSig(newPreload) !== window.queuePageState.previousPreloadSig;
 
-      if (queueChanged || npChanged) {
+      if (queueChanged || npChanged || preChanged) {
         window.queuePageState.queue = newQueue;
         window.queuePageState.nowPlaying = newNowPlaying;
+        window.queuePageState.preload = newPreload;
 
         // Destroy existing Sortable before replacing HTML to avoid errors
         var table = document.getElementById('auto-refresh');
@@ -54,8 +60,31 @@
         }
 
         $("#auto-refresh").html(window.queuePage_generateHTML());
+        // ============== CORRECAO TELA ATUALIZAR NA HORA (FLASH VISUAL) ==============
+        // Quando a fila OU now_playing MUDAR, pisca o fundo da tabela de AMARELO (800ms) e
+        // volta para normal. Assim o OPERADOR percebe imediatamente que a tela REFRESHOU
+        // (alguem adicionou, ou mudou now playing, etc.), evita chamar pessoa errada.
+        try {
+          var flashEl = document.getElementById('auto-refresh');
+          if (flashEl) {
+            flashEl.style.transition = 'none';
+            flashEl.style.backgroundColor = 'rgba(255, 221, 87, 0.35)';
+            flashEl.style.boxShadow = 'inset 0 0 0 2px rgba(255, 205, 60, 0.55)';
+            // Forca reflow
+            void flashEl.offsetWidth;
+            flashEl.style.transition = 'background-color 800ms ease, box-shadow 800ms ease';
+            setTimeout(function() {
+              try {
+                flashEl.style.backgroundColor = '';
+                flashEl.style.boxShadow = '';
+              } catch(_){}
+            }, 350);
+          }
+        } catch(_) {}
+
         window.queuePageState.previousQueue = newQueue;
         window.queuePageState.previousNowPlaying = newNowPlaying;
+        window.queuePageState.previousPreloadSig = _preloadSig(newPreload);
 
         // Initialize Drag and Drop after HTML is rendered
         window.initSortable();
@@ -131,10 +160,24 @@
 
   // Column width constants
   var COL_WIDTH = {
+    led: '28px',
     number: '35px',
     drag: '44px',
     options: '50px'
   };
+
+  function _preloadStatusOf(qid, byQid) {
+    if (!qid || !byQid) return "unknown";
+    const st = byQid[qid];
+    if (!st) return "unknown";
+    return String(st);
+  }
+
+  function _preloadSig(preload) {
+    if (!preload) return "";
+    const by = preload.by_qid || {};
+    return Object.keys(by).sort().map(k => k + ":" + by[k]).join("|") + "|" + (preload.ready_count||0) + "|" + (preload.running_count||0);
+  }
 
   // Generate now-playing row HTML
   function generateNowPlayingRow(np) {
@@ -143,6 +186,11 @@
       : '{{ url_for("static", filename="images/now-playing.gif") }}';
 
     var html = '<tr class="disabled-sort has-background-dark">';
+
+    html += '<td style="width: ' + COL_WIDTH.led + '; padding: 8px 4px; vertical-align: middle; text-align: center;">';
+    html += '<span class="preload-led ready" title="Tocando agora"></span>';
+    html += '</td>';
+
     html += '<td style="width: ' + COL_WIDTH.number + '; padding: 8px 8px; vertical-align: middle; text-align: center;">';
     html += '<img src="' + iconSrc + '" alt="Now Playing" style="width: 35px; height: auto;">';
     html += '</td>';
@@ -171,6 +219,71 @@
 
 
   // Download Progress Polling
+  window.__translateDownloadErrorPTBR = function(rawErr) {
+      // Fallback JS se backend nao traduziu. Mapeia mensagens INGLES -> PT-BR explicativo
+      // para o usuario final (NUNCA mostrar mensagem em ingles).
+      if (!rawErr || (typeof rawErr !== "string")) {
+          return "Ocorreu um erro desconhecido durante o download (tente novamente)";
+      }
+      var t = ("" + rawErr).trim();
+      if (!t) return "Ocorreu um erro desconhecido durante o download (tente novamente)";
+      var low = t.toLowerCase();
+      var MAP = [
+          [["already exists in library"], function(s, tail) {
+              return "Música já existia na biblioteca local (não precisa baixar de novo)" + (tail ? ": " + tail : "");
+          }],
+          [["does not look like karaoke", "rejected non-karaoke", "rejected because title does not look like karaoke"], function() {
+              return "Esta música NÃO É KARAOKÊ (o título ou canal não indica versão karaokê — use busca karaokê ou adicione '[Karaoke]' no nome se tiver certeza)";
+          }],
+          [["corrupted or invalid file removed", "integrity check", "failed integrity check"], function(s, tail) {
+              return "Arquivo corrompido ou inválido (download quebrou no meio e foi apagado automaticamente — tente baixar de novo)" + (tail ? " (" + tail + ")" : "");
+          }],
+          [["saved file could not be found", "download finished but the saved file could not be found", "could not find downloaded song", "could not be located"], function() {
+              return "Download terminou mas o arquivo salvo NÃO FOI ENCONTRADO na pasta das músicas (disco cheio ou caminho inválido)";
+          }],
+          [["download timed out and was cancelled", "stalled for more than", "yt-dlp stalled", "parou de receber dados"], function() {
+              return "Download PAROU no meio (timeout) — internet caiu ou travou. Tente novamente mais tarde";
+          }],
+          [["video unavailable", "private video", "this video is private", "sign in to confirm your age",
+            "not available in your country", "members-only", "copyright", "restricted", "blocked",
+            "vídeo indisponível", "privado, bloqueado", "bloqueado por país/idade"], function() {
+              return "Vídeo BLOQUEADO ou PRIVADO (idade, país, membro do canal, direitos autorais ou o dono retirou)";
+          }],
+          [["http error 403", "http error 429", "too many requests", "rate-limited", "denied access",
+            "muitos downloads seguidos"], function() {
+              return "YouTube/link limitou seus downloads por excesso (HTTP 403/429). Aguarde 5~10 minutos e tente de novo";
+          }],
+          [["timed out", "timeout", "network is unreachable", "temporary failure in name resolution",
+            "connection refused", "connection reset", "no route to host", "network error",
+            "erro de rede", "internet caiu", "dns nao respondeu"], function() {
+              return "ERRO DE REDE / INTERNET (wi-fi caiu, DNS ou roteador). Verifique a conexão com a Internet";
+          }],
+          [["permission denied", "read-only file system", "no space left on device", "storage error", "disk full",
+            "sem espaço em disco", "permissão negada"], function() {
+              return "ERRO AO SALVAR NO DISCO (disco cheio ou sem permissão de gravação na pasta das músicas)";
+          }],
+          [["unsupported url", "unsupported url scheme", "invalid video link", "invalid url"], function() {
+              return "Link de vídeo INVÁLIDO ou não suportado (não é link do YouTube ou formato reconhecido)";
+          }]
+      ];
+      for (var i = 0; i < MAP.length; i++) {
+          var toks = MAP[i][0]; var fn = MAP[i][1];
+          for (var j = 0; j < toks.length; j++) {
+              if (low.indexOf(toks[j]) !== -1) {
+                  var tail = "";
+                  if (t.indexOf(":") !== -1) {
+                      var parts = t.split(":");
+                      tail = (parts.slice(1).join(":") || "").trim();
+                  }
+                  try { return fn(t, tail); } catch (e) { return fn(t); }
+              }
+          }
+      }
+      // Nenhuma regra bateu: mostra mensagem generica mas em PT-BR, com o trecho original entre parenteses
+      var snippet = t.replace(/[\r\n]+/g, " ").slice(0, 160);
+      return "Falha no download (detalhe técnico: " + snippet + ")";
+  };
+
   window.queuePage_getDownloads = function() {
       // Clean up existing timer if any
       if (window.downloadPollTimer) {
@@ -225,12 +338,24 @@
           if (status.errors && status.errors.length > 0) {
               html += `<div class="content"><h5 class="title is-6 mb-2 has-text-danger">{{ _('Download Errors') }}</h5>`;
               status.errors.forEach(function(d) {
+                  var erroOriginal = (typeof d.error === "string") ? d.error : "";
+                  // Garantia DUPLA: sempre passa pelo tradutor PT-BR no frontend (mesmo que backend
+                  // ja tenha traduzido, se for mensagem em ingles ele traduz de novo).
+                  var erroPTBR = erroOriginal;
+                  try {
+                      if (window.__translateDownloadErrorPTBR) {
+                          erroPTBR = window.__translateDownloadErrorPTBR(erroOriginal) || erroOriginal;
+                      }
+                  } catch (_) { erroPTBR = erroOriginal; }
+                  // Sanitiza para nao quebrar atributo title
+                  var erroSan = String(erroPTBR).replace(/"/g, "&quot;").replace(/`/g, "'").replace(/\$/g, "&#36;");
+                  var titleSan = String(d.title || d.url || "").replace(/"/g, "&quot;").replace(/`/g, "'").replace(/\$/g, "&#36;");
                   html += `
                       <div class="box mb-2 p-3 has-background-white-ter is-flex is-align-items-center" style="border-left: 4px solid #f14668;">
                           <span class="icon has-text-danger mr-2"><i class="icon-cancel"></i></span>
                           <div class="is-flex-grow-1" style="min-width: 0;">
-                              <p class="has-text-grey mb-0 is-truncated" title="${d.title || d.url}">${d.title || d.url}</p>
-                              <p class="help is-danger mb-0 is-truncated" title="${d.error}">${d.error}</p>
+                              <p class="has-text-grey mb-0 is-truncated" title="${titleSan}">${d.title || d.url}</p>
+                              <p class="help is-danger mb-0" title="${erroSan}" style="line-height:1.35; max-height:2.7em; overflow:hidden;">${erroPTBR}</p>
                           </div>
                           <span class="tag is-danger is-light is-rounded ml-2">{{ _('Failed') }}</span>
                           <button class="delete ml-2" onclick="dismissDownloadError('${d.id}')" title="{{ _('Dismiss') }}"></button>
@@ -290,8 +415,27 @@
 
 
   // Generate queue row HTML
-  function generateQueueRow(e, index) {
+  function generateQueueRow(e, index, preload) {
+    var pre = preload || {};
+    var byQid = pre.by_qid || {};
+    var labels = pre.labels || {};
+    var windowSize = Number(pre.window_size || 2);
+
+    var qid = String(e.qid || "");
+    var st = _preloadStatusOf(qid, byQid);
+    var label = labels && labels[st] ? labels[st]
+      : st === "ready" ? "Pronta e carregada"
+      : st === "transcoding" ? "Carregando agora..."
+      : st === "failed" ? "Falhou ao carregar"
+      : st === "queued" ? "Na fila para carregar"
+      : (index < windowSize ? "Aguardando" : "Fora da janela — carrega quando subir");
+
     var html = '<tr data-index="' + index + '">';
+
+    html += '<td style="width: ' + COL_WIDTH.led + '; padding: 8px 4px; vertical-align: middle; text-align: center;">';
+    html += '<span class="preload-led ' + st + '" title="' + label.replace(/"/g,'&quot;') + '"></span>';
+    html += '</td>';
+
     html += '<td style="width: ' + COL_WIDTH.number + '; padding: 8px 8px; vertical-align: middle; text-align: center;">' + (index + 1) + '</td>';
 
     if (isAdmin) {
@@ -323,7 +467,8 @@
     var html = "<tbody>";
     var queue = window.queuePageState.queue;
     var np = window.queuePageState.nowPlaying;
-    var colSpan = isAdmin ? 4 : 2;
+    var preload = window.queuePageState.preload || null;
+    var colSpan = isAdmin ? 5 : 3;
 
     if (np && np.now_playing) {
       html += generateNowPlayingRow(np);
@@ -331,7 +476,7 @@
 
     if (queue.length > 0) {
       queue.forEach(function(e, index) {
-        html += generateQueueRow(e, index);
+        html += generateQueueRow(e, index, preload);
       });
     } else if (!np || !np.now_playing) {
       // Only show empty message if nothing is playing AND queue is empty
@@ -417,8 +562,36 @@
   window.socket.on("queue_update", window.queuePage_getQueue);
   window.socket.off("now_playing");
   window.socket.on("now_playing", window.queuePage_getQueue);
+  window.socket.off("preload_update");
+  window.socket.on("preload_update", window.queuePage_getQueue);
   window.queuePageState.previousQueue = null;
   window.queuePageState.previousNowPlaying = null;
+
+  // Fallback polling: refresh every 1.5 seconds (safe guard for LEDs + conexoes socket instaveis)
+  // Antes era 2s. Reduzimos para 1500ms (1.5s) para atualizar MAIS RAPIDO a tela quando
+  // alguem adicionar musica ou now playing mudar (antes podia demorar 2s inteiros!).
+  // queuePage_getQueue usa previousPreloadSig / previousQueue / previousNowPlaying
+  // entao soh re-renderiza quando algo realmente mudou (nao gasta CPU).
+  setInterval(function(){
+    try { window.queuePage_getQueue(); } catch(_) {}
+  }, 1500);
+
+  // ============== CORRECAO TELA ATUALIZAR NA HORA (FOCUS + VISIBILITY) ==============
+  // Se o operador estava olhando o WhatsApp/Chrome outra aba e VOLTOU para a pagina FILA:
+  // ATUALIZA IMEDIATAMENTE (nao espera os 1.5s do polling) para ter a ordem mais nova
+  // possivel e chamar a pessoa CERTA (nao chamar pessoa errada por tela desatualizada).
+  try {
+    window.addEventListener("focus", function(){
+      try { window.queuePageState.previousQueue = null; window.queuePageState.previousNowPlaying = null; } catch(_){}
+      try { window.queuePage_getQueue(); window.queuePage_getDownloads(); } catch(_){}
+    });
+    document.addEventListener("visibilitychange", function(){
+      if (document.visibilityState === "visible") {
+        try { window.queuePageState.previousQueue = null; window.queuePageState.previousNowPlaying = null; } catch(_){}
+        try { window.queuePage_getQueue(); window.queuePage_getDownloads(); } catch(_){}
+      }
+    });
+  } catch(_){}
 
   // Open now-playing options modal
   window.openNowPlayingOptions = function() {
@@ -483,8 +656,31 @@
   });
 
   // Visibility handler (same as before)
-  // ... (Keep existing visibility logic here if needed) ...
+  // ... (Keep existing visibility logic here if needed) ...});
 </script>
+
+<style>
+  .preload-led {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    background: #94a3b8;
+    box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18);
+    vertical-align: middle;
+  }
+  .preload-led.unknown     { background: #94a3b8; box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18); }
+  .preload-led.queued      { background: #94a3b8; box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18); }
+  .preload-led.transcoding { background: #fbbf24; box-shadow: 0 0 12px rgba(251, 191, 36, 0.75), 0 0 0 2px rgba(251, 191, 36, 0.22);
+    animation: led-pulse 1.2s ease-in-out infinite; }
+  .preload-led.ready       { background: #34d399; box-shadow: 0 0 12px rgba(52, 211, 153, 0.7), 0 0 0 2px rgba(52, 211, 153, 0.22); }
+  .preload-led.failed      { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, 0.65), 0 0 0 2px rgba(248, 113, 113, 0.22); }
+
+  @keyframes led-pulse {
+    0%, 100% { transform: scale(1);   opacity: 1; }
+    50%      { transform: scale(1.35); opacity: 0.78; }
+  }
+</style>
 
 {% endblock %}
 

@@ -1,7 +1,7 @@
 """Home page route."""
 
 import flask_babel
-from flask import render_template
+from flask import make_response, render_template
 from flask_smorest import Blueprint
 
 from pikaraoke.lib.current_app import get_karaoke_instance, get_site_name, is_admin
@@ -17,7 +17,7 @@ def home():
     """Home page with now playing info and controls."""
     k = get_karaoke_instance()
     site_name = get_site_name()
-    return render_template(
+    resp = make_response(render_template(
         "home.html",
         site_title=site_name,
         title="Home",
@@ -26,4 +26,8 @@ def home():
         is_transpose_enabled=k.is_transpose_enabled,
         volume=k.volume,
         mic_available=k.sound_manager.available,
-    )
+    ))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp

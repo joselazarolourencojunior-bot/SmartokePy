@@ -4,7 +4,7 @@ import shutil
 import subprocess
 
 import flask_babel
-from flask import jsonify, render_template
+from flask import jsonify, make_response, render_template
 from flask_smorest import Blueprint
 
 from pikaraoke.karaoke import Karaoke
@@ -85,7 +85,7 @@ def splash():
                 # handle raspiwifi connection mode
                 text = get_raspi_wifi_text()
 
-    return render_template(
+    resp = make_response(render_template(
         "splash.html",
         site_title=site_name,
         blank_page=True,
@@ -100,4 +100,8 @@ def splash():
         disable_score=k.disable_score,
         bg_music_volume=k.bg_music_volume,
         has_bg_video=k.bg_video_path is not None,
-    )
+    ))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp

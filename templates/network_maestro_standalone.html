@@ -397,6 +397,153 @@
     .notification.warning { border-color: rgba(251, 191, 36, 0.4); background: rgba(66, 32, 6, 0.96); }
     .notification.danger { border-color: rgba(248, 113, 113, 0.4); background: rgba(69, 10, 10, 0.96); }
 
+    /* ============ NOVO: Seção Fila + LED Preload ============ */
+    .queue-section { }
+
+    .queue-stats {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .queue-stats .tag strong { color: var(--text); font-weight: 800; margin-left: 4px; }
+
+    .queue-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .queue-song-card,
+    .queue-nowplaying-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s ease;
+    }
+
+    .queue-song-card:hover { border-color: rgba(96, 165, 250, 0.45); transform: translateY(-1px); }
+
+    .queue-nowplaying-card {
+      border-color: rgba(52, 211, 153, 0.55);
+      background: linear-gradient(180deg, rgba(52, 211, 153, 0.12), rgba(15, 23, 42, 0));
+      box-shadow: 0 6px 22px rgba(52, 211, 153, 0.16);
+    }
+
+    .queue-led-wrap {
+      flex-shrink: 0;
+      padding-top: 4px;
+      position: relative;
+    }
+
+    .preload-led {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: block;
+      background: #94a3b8;
+      box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18);
+    }
+
+    .preload-led.unknown     { background: #94a3b8; box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18); }
+    .preload-led.queued      { background: #94a3b8; box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18); }
+    .preload-led.transcoding { background: #fbbf24; box-shadow: 0 0 12px rgba(251, 191, 36, 0.75), 0 0 0 2px rgba(251, 191, 36, 0.22); }
+    .preload-led.ready       { background: #34d399; box-shadow: 0 0 12px rgba(52, 211, 153, 0.7), 0 0 0 2px rgba(52, 211, 153, 0.22); }
+    .preload-led.failed      { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, 0.65), 0 0 0 2px rgba(248, 113, 113, 0.22); }
+
+    /* Animação pulsando para "transcoding" */
+    .preload-led.transcoding {
+      animation: led-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes led-pulse {
+      0%, 100% { transform: scale(1);   opacity: 1; }
+      50%      { transform: scale(1.35); opacity: 0.78; }
+    }
+
+    .queue-song-body { flex: 1; min-width: 0; }
+    .queue-song-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .queue-song-title {
+      font-weight: 700;
+      font-size: 15px;
+      line-height: 1.3;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .queue-song-user {
+      margin-top: 4px;
+      font-size: 13px;
+      color: var(--muted);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .queue-song-user .pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.12);
+      border: 1px solid rgba(96, 165, 250, 0.28);
+      color: #cfe0ff;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .queue-song-user .pill.now {
+      background: rgba(52, 211, 153, 0.14);
+      border-color: rgba(52, 211, 153, 0.4);
+      color: #a7f3d0;
+    }
+
+    .queue-empty {
+      padding: 28px 16px;
+      text-align: center;
+      border-radius: 16px;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      margin-top: 10px;
+      font-size: 14px;
+    }
+
+    .queue-nowplaying-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #a7f3d0;
+      font-weight: 800;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .queue-nowplaying-badge::before {
+      content: "";
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #34d399;
+      box-shadow: 0 0 10px rgba(52, 211, 153, 0.8);
+      animation: led-pulse 1s ease-in-out infinite;
+    }
+
+    .queue-song-pos {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 8px;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+    .queue-song-pos.in-window { color: #93c5fd; background: rgba(96, 165, 250, 0.1); }
+
     @media (max-width: 1024px) {
       .grid-3,
       .grid-2,
@@ -543,6 +690,32 @@
         </form>
       </section>
     </div>
+
+    <!-- ================= NOVA SEÇÃO: FILA DE MÚSICAS (COM LEDS PRELOAD) ================= -->
+    <section class="panel queue-section">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Ao vivo · atualiza a cada 2s</p>
+          <h2>Fila de músicas</h2>
+        </div>
+        <div class="queue-stats">
+          <span class="tag">Próximas <strong id="queueCountTotal">0</strong></span>
+          <span class="tag" title="Prontas, carregadas em background">
+            Prontas <strong id="queueCountReady">0</strong> ✅
+          </span>
+          <span class="tag" title="Carregando AGORA (1 por vez para não travar)">
+            Carregando <strong id="queueCountLoading">0</strong>
+          </span>
+          <span class="tag">Janela <strong id="queueWindow">5</strong></span>
+        </div>
+      </div>
+
+      <div id="queueNowPlaying" style="display:none;"></div>
+      <div id="queueListContainer">
+        <div class="queue-empty">Carregando fila de músicas...</div>
+      </div>
+    </section>
+
   </div>
 
   <div id="notification" class="notification"></div>
@@ -551,6 +724,152 @@
     let currentWifiStatus = null;
     let currentPartnerStatus = null;
     let statusTimer = null;
+    let queueTimer = null;
+    let currentPreloadLabels = {};
+
+    function formatDuration(sec) {
+      if (sec == null || isNaN(sec)) return "--:--";
+      const s = Math.max(0, Math.floor(Number(sec)));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}:${r.toString().padStart(2, "0")}`;
+    }
+
+    function _preloadStatusOf(qid, byQid) {
+      if (!qid || !byQid) return "unknown";
+      const st = byQid[qid];
+      if (!st) return "unknown";
+      return String(st);
+    }
+
+    function renderQueue(info) {
+      // info: { queue: [...], preload: {by_qid, labels, colors, window_size, ...}, now_playing: {...} }
+      const queue = Array.isArray(info && info.queue) ? info.queue : [];
+      const preload = (info && info.preload) || {};
+      const byQid = preload.by_qid || {};
+      const labels = preload.labels || currentPreloadLabels || {};
+      currentPreloadLabels = labels || currentPreloadLabels;
+      const now = (info && info.now_playing) || {};
+
+      // --- Stats header ---
+      const total = queue.length;
+      const ready = Number(preload.ready_count || 0);
+      const loading = Number(preload.running_count || 0);
+      const windowSize = Number(preload.window_size || 5);
+      const qCountTotal = document.getElementById("queueCountTotal");
+      const qCountReady = document.getElementById("queueCountReady");
+      const qCountLoading = document.getElementById("queueCountLoading");
+      const qWindow = document.getElementById("queueWindow");
+      if (qCountTotal) qCountTotal.textContent = total;
+      if (qCountReady) qCountReady.textContent = ready;
+      if (qCountLoading) qCountLoading.textContent = loading;
+      if (qWindow) qWindow.textContent = windowSize;
+
+      // --- Card "TOCANDO AGORA" ---
+      const nowNode = document.getElementById("queueNowPlaying");
+      if (nowNode) {
+        const npTitle = now.now_playing || null;
+        const npUser = now.now_playing_user || null;
+        const npDur = now.now_playing_duration || null;
+        const npPos = now.now_playing_position || null;
+        const npSemitones = (now.now_playing_transpose != null && now.now_playing_transpose !== 0)
+          ? Number(now.now_playing_transpose) : null;
+        if (npTitle) {
+          nowNode.style.display = "block";
+          const userHtml = npUser ? `<span class="pill now">${String(npUser).replace(/</g,"&lt;")}</span>` : "";
+          const durHtml = (npDur || npPos != null)
+            ? `<span class="pill now">${formatDuration(npPos)} / ${formatDuration(npDur)}</span>`
+            : "";
+          const semiHtml = npSemitones !== null
+            ? `<span class="pill now">Tom ${npSemitones > 0 ? "+" : ""}${npSemitones}</span>`
+            : "";
+          nowNode.innerHTML = `
+            <div class="queue-nowplaying-card" style="margin-bottom:12px;">
+              <div class="queue-led-wrap">
+                <span class="preload-led ready" title="Tocando agora"></span>
+              </div>
+              <div class="queue-song-body">
+                <div class="queue-song-header">
+                  <div class="queue-song-title" style="color:#a7f3d0;">
+                    <span class="queue-nowplaying-badge">Tocando agora</span>
+                    <div style="margin-top:6px;">${String(npTitle).replace(/</g,"&lt;")}</div>
+                  </div>
+                </div>
+                <div class="queue-song-user">
+                  ${userHtml}${durHtml}${semiHtml}
+                </div>
+              </div>
+            </div>
+          `;
+        } else {
+          nowNode.style.display = "none";
+          nowNode.innerHTML = "";
+        }
+      }
+
+      // --- Cards da fila ---
+      const listNode = document.getElementById("queueListContainer");
+      if (!listNode) return;
+      if (!queue.length) {
+        listNode.innerHTML = `
+          <div class="queue-empty">
+            Nenhuma música na fila ainda. Os clientes adicionam músicas pelos links das mesas.
+          </div>`;
+        return;
+      }
+
+      let html = "";
+      for (let i = 0; i < queue.length; i++) {
+        const it = queue[i];
+        const qid = String(it.qid || "");
+        const title = String(it.title || it.file || "Música sem nome");
+        const user = String(it.user || "");
+        const semitones = (it.semitones != null && it.semitones !== 0) ? Number(it.semitones) : null;
+        const st = _preloadStatusOf(qid, byQid);
+        const label = labels && labels[st] ? labels[st] : (st === "ready" ? "Pronta" : st === "transcoding" ? "Carregando" : "Aguardando");
+        const inWindow = i < windowSize;
+        const posClass = inWindow ? "in-window" : "";
+        const posLabel = inWindow ? `#${i+1} · Janela` : `#${i+1}`;
+
+        const userHtml = user ? `<span class="pill">${user.replace(/</g,"&lt;")}</span>` : "";
+        const semiHtml = semitones !== null
+          ? `<span class="pill">Tom ${semitones > 0 ? "+" : ""}${semitones}</span>`
+          : "";
+        const statusPill = inWindow
+          ? `<span class="pill" title="${label.replace(/"/g,"&quot;")}">${label}</span>`
+          : `<span class="pill" title="Fora da janela das primeiras ${windowSize} — vai carregar quando subir na fila.">Aguardando</span>`;
+
+        html += `
+          <div class="queue-song-card">
+            <div class="queue-led-wrap">
+              <span class="preload-led ${st}" title="${label.replace(/"/g,"&quot;")}"></span>
+            </div>
+            <div class="queue-song-body">
+              <div class="queue-song-header">
+                <div class="queue-song-title" title="${title.replace(/"/g,"&quot;")}">${title.replace(/</g,"&lt;")}</div>
+                <span class="queue-song-pos ${posClass}">${posLabel}</span>
+              </div>
+              <div class="queue-song-user">
+                ${userHtml}${semiHtml}${statusPill}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      listNode.innerHTML = `<div class="queue-list">${html}</div>`;
+    }
+
+    async function refreshQueueInfo(showErrors) {
+      try {
+        const data = await api("/maestro/api/queue-info");
+        renderQueue(data);
+      } catch (err) {
+        if (showErrors) {
+          showNotification("Não foi possível carregar a fila agora: " + (err.message || err),
+            "danger", 4500);
+        }
+      }
+    }
 
     function signalLabel(signal) {
       if (signal >= 80) return "Excelente";
@@ -972,6 +1291,7 @@
       try {
         await refreshStatus();
         await refreshNetworks();
+        await refreshQueueInfo(true);
       } catch (error) {
         showNotification(error.message, "danger", 6500);
       }
@@ -983,11 +1303,22 @@
           // Mantem o painel vivo mesmo se uma sondagem falhar.
         }
       }, 5000);
+
+      queueTimer = window.setInterval(async () => {
+        try {
+          await refreshQueueInfo(false);
+        } catch (_error) {
+          // polling silencioso
+        }
+      }, 2000);
     }
 
     window.addEventListener("beforeunload", () => {
       if (statusTimer) {
         window.clearInterval(statusTimer);
+      }
+      if (queueTimer) {
+        window.clearInterval(queueTimer);
       }
     });
 

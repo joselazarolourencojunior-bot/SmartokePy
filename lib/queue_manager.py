@@ -521,8 +521,47 @@ class QueueManager:
         The playback system emits now_playing events which trigger queue UI updates.
 
         Returns None if queue is empty.
+
+        [V45 BLOQUEIO ABSOLUTO NA FONTE - 13/08/2026 - CANTORES ATIVOS]
+        Se SingerManager estiver ativo (tem pelo menos 1 cantor cadastrado),
+        ESTA FUNCAO E BLOQUEADA COMPLETAMENTE. Retorna None SEMPRE e grava
+        ERRO GRAVE no journal com stack trace completo.
+
+        Motivo: descobrimos (depois do bug do Junior tocar 2x seguidas pulando
+        Simone) que existem caminhos de codigo ESQUECIDOS (fora do Run Loop
+        principal do karaoke.py) que chamam .pop_next() diretamente e tocam
+        musica SEM PASSAR pela Lei da Vez Sagrada, ignorando o cantor da vez.
+        A unica protecao que 100% funciona e travar NA FONTE do pop_next(),
+        nao na chamada. Enquanto houver cantores cadastrados, a unica forma
+        autorizada de pegar musica e atraves de pop_next_only_for_singer(),
+        que respeita a ordem fixa por rodada.
         """
         if not self.queue:
+            return None
+
+        _sm = getattr(self, "_singer_manager", None)
+        _tem_cantores_ativos: bool = False
+        try:
+            if _sm is not None and hasattr(_sm, "singers"):
+                _todos = list(getattr(_sm, "singers", []) or [])
+                _tem_cantores_ativos = any(
+                    (getattr(s, "status", "") or "") != "left_early"
+                    for s in _todos
+                )
+        except Exception:
+            _tem_cantores_ativos = False
+
+        if _sm is not None and _tem_cantores_ativos:
+            import traceback
+            _stack = traceback.format_stack(limit=10)
+            logging.error(
+                "[V45 BLOQUEIO NA FONTE - BLOQUEADO pop_next() INVALIDO!] "
+                "SingerManager ativo com cantores, mas ALGUEM chamou "
+                "queue_manager.pop_next() DIRETAMENTE fora da Lei da Vez "
+                "Sagrada. Esta chamada foi BLOQUEADA e retornou None. "
+                "Stack trace completo abaixo p/ descobrir o bug:\n%s",
+                "\n".join(_stack)
+            )
             return None
 
         if not self._preferences.get_or_default("enable_fair_queue"):

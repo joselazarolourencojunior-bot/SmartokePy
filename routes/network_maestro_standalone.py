@@ -232,3 +232,31 @@ def wifi_disconnect():
             "peer": peer_result,
         }
     )
+
+
+@network_maestro_standalone_bp.route("/api/queue-info")
+def queue_info():
+    """Retorna FILA COMPLETA + MAPA DE STATUS PRELOAD em 1 request (para o Maestro).
+
+    Combina /get_queue + /api/preload_status_map, e também:
+      - Garante qids em todos itens (compatibilidade)
+      - Inclui campo 'now_playing' para exibir a música TOCANDO AGORA acima da fila.
+
+    Usado pelo painel Maestro a cada 2s (polling).
+    """
+    from pikaraoke.lib.current_app import get_karaoke_instance
+    from pikaraoke.lib.queue_manager import QueueManager as _QM
+
+    k = get_karaoke_instance()
+    q = list(k.queue_manager.queue)
+    for it in q:
+        _QM.ensure_item_qid(it)
+
+    preload_map = k.playback_controller.get_preload_status_map(include_meta=True)
+    now = k.playback_controller.get_now_playing()
+
+    return jsonify({
+        "queue": q,
+        "preload": preload_map,
+        "now_playing": now,
+    })

@@ -36,6 +36,84 @@ class DownloadManager:
         download_queue: Queue holding pending download requests.
     """
 
+    # ============================================================
+    # TRADUCOES PT-BR: dicionario para mensagens de erro de download
+    # (usado por _translate_error_to_ptbr abaixo). Os matchers sao
+    # case-insensitive e procurar por substring na mensagem bruta.
+    # ============================================================
+    PTBR_ERROR_RULES: list[tuple[tuple[str, ...], str]] = [
+        # --- MUSICA JA EXISTIA NA BIBLIOTECA (exatamente o caso da foto do usuario) ---
+        (("already exists in library",), "Música já existia na biblioteca local (não precisa baixar de novo): {existing}"),
+        # --- NAO E KARAOKE (titulo/channel nao passa filtro) ---
+        (("does not look like karaoke", "rejected because title does not look like karaoke", "rejected non-karaoke"),
+         "Esta música NÃO É KARAOKÊ (o título ou canal não indica versão karaokê — use busca karaokê ou adicione '[Karaoke]' no nome se tiver certeza)"),
+        # --- ARQUIVO CORROMPIDO / INVALIDO (validate_media_file reprovou) ---
+        (("corrupted or invalid file removed", "integrity check", "failed integrity check"),
+         "Arquivo corrompido ou inválido (download quebrou no meio e foi apagado automaticamente — tente baixar de novo): {existing}"),
+        # --- ARQUIVO NAO FOI SALVO / NAO ENCONTRADO DEPOIS ---
+        (("saved file could not be found", "download finished but the saved file could not be found", "could not find downloaded song", "could not be located"),
+         "Download terminou mas o arquivo salvo NÃO FOI ENCONTRADO na pasta das músicas (disco cheio ou caminho inválido)"),
+        # --- TIMEOUT / CANCELADO POR PARADA DE OUTPUT ---
+        (("download timed out and was cancelled", "timed out and was cancelled", "stalled for more than", "yt-dlp stalled"),
+         "Download PAROU no meio (timeout) — internet caiu ou travou. Tente novamente mais tarde"),
+        # --- VIDEO PRIVADO / BLOQUEADO / RESTRITO / PAIS ---
+        (("video unavailable", "private video", "this video is private", "sign in to confirm your age",
+          "not available in your country", "members-only", "copyright", "restricted", "blocked"),
+         "Vídeo BLOQUEADO ou PRIVADO (idade, país, membro do canal, direitos autorais ou o dono retirou)"),
+        # --- 403 / 429 / RATE LIMITED ---
+        (("http error 403", "http error 429", "too many requests", "rate-limited", "denied access"),
+         "YouTube/link limitou seus downloads por excesso (HTTP 403/429). Aguarde 5~10 minutos e tente de novo"),
+        # --- REDE / DNS / TIME OUT DE REDE ---
+        (("network error", "timed out", "timeout", "network is unreachable", "temporary failure in name resolution",
+          "connection refused", "connection reset", "no route to host"),
+         "ERRO DE REDE / INTERNET (wi-fi caiu, DNS ou roteador). Verifique a conexão com a Internet"),
+        # --- ARMAZENAMENTO / DISCO CHEIO / PERMISSAO ---
+        (("permission denied", "read-only file system", "no space left on device", "storage error", "disk full"),
+         "ERRO AO SALVAR NO DISCO (disco cheio ou sem permissão de gravação na pasta das músicas)"),
+        # --- LINK INVALIDO / NAO SUPORTADO ---
+        (("unsupported url", "unsupported url scheme", "invalid video link", "invalid url"),
+         "Link de vídeo INVÁLIDO ou não suportado (não é link do YouTube ou formato reconhecido)"),
+    ]
+
+    def _translate_error_to_ptbr(self, raw_error: str, existing_name: str | None = None) -> str:
+        """Recebe mensagem de erro em INGLES (ou misturado) e retorna versao PT-BR
+        explicativa para o usuario FINAL. Nunca retorna mensagem em ingles.
+        Usa PTBR_ERROR_RULES acima; se nenhuma regra bater, retorna generico
+        mas em portugues, com o trecho original entre parenteses so para debug."""
+        text = (raw_error or "").strip()
+        if not text:
+            return "Ocorreu um erro desconhecido durante o download (tente novamente)"
+        low = text.casefold()
+        for tokens, template in self.PTBR_ERROR_RULES:
+            if any(tok and tok in low for tok in tokens):
+                # Substitui placeholders, se nao tiver valor mostra vazio
+                existing_display = str(existing_name) if existing_name else ""
+                rendered = template
+                try:
+                    rendered = template.format(existing=existing_display or "")
+                except Exception:
+                    pass
+                # Se a mensagem original contem o existing_name no final, preserva
+                # (ex: "Already exists in library: O TROPEIRO..." vira "Musica ja existia: O TROPEIRO...")
+                # Se ja temos existing_name, garanta que aparece no final
+                if existing_name and existing_name not in rendered and existing_name in text:
+                    # Extrai possivel titulo do final do erro original (separa por ":" ultimo pedaco)
+                    tail = ""
+                    if ":" in text:
+                        tail = text.split(":", 1)[1].strip()
+                    if tail and existing_name and tail != existing_name:
+                        rendered = rendered + (f": {tail}" if tail else f": {existing_name}")
+                    elif existing_name:
+                        rendered = rendered + f": {existing_name}"
+                elif (not existing_name) and ":" in text:
+                    tail = text.split(":", 1)[1].strip()
+                    if tail and len(tail) <= 240 and tail not in rendered:
+                        rendered = rendered + f": {tail}"
+                return rendered.strip(": ").strip()
+        # Fallback: mostra mensagem generica PT + trecho original entre parenteses
+        snippet = text[:160].replace("\n", " ").strip()
+        return f"Falha no download (detalhe técnico: {snippet})"
+
     def __init__(
         self,
         events: EventSystem,
@@ -129,9 +207,11 @@ class DownloadManager:
         return None
 
     def _classify_download_failure(self, raw_error: str, stalled: bool) -> str:
+        """Classifica falha do yt-dlp e retorna MENSAGEM EM PORTUGUES para o
+        usuario FINAL. (nunca ingles)."""
         error_text = (raw_error or "").casefold()
         if stalled:
-            return "Download timed out and was cancelled"
+            return "Download cancelado: parou de receber dados (internet caiu ou travou)"
         if any(
             token in error_text
             for token in (
@@ -145,16 +225,16 @@ class DownloadManager:
                 "unavailable",
             )
         ):
-            return "Video unavailable, private, blocked, or restricted"
+            return "Vídeo indisponível, privado, bloqueado por país/idade ou com direitos autorais restritos"
         if any(token in error_text for token in ("http error 403", "http error 429", "too many requests")):
-            return "Video source denied access or rate-limited the download"
+            return "Muitos downloads seguidos! (HTTP 403/429)"
         if any(token in error_text for token in ("timed out", "timeout", "network is unreachable", "temporary failure in name resolution")):
-            return "Network error while downloading"
+            return "Erro de rede: internet caiu, timeout ou DNS nao respondeu"
         if any(token in error_text for token in ("permission denied", "read-only file system", "no space left on device")):
-            return "Storage error while saving the file"
+            return "Sem espaço em disco ou permissão negada ao salvar a pasta das músicas"
         if any(token in error_text for token in ("unsupported url", "unsupported url scheme")):
-            return "Unsupported or invalid video link"
-        return "Download failed"
+            return "Link do YouTube"
+        return "Download falhou: não foi possível baixar este vídeo agora"
 
     def queue_download(
         self,
@@ -190,13 +270,15 @@ class DownloadManager:
         if existing_match:
             existing_name = self._song_manager.display_name_from_path(existing_match)
             logging.info("Rejected duplicate download already in library: %s", displayed_title)
+            msg_raw = f"Already exists in library: {existing_name}"
+            msg_ptbr = self._translate_error_to_ptbr(msg_raw, existing_name=existing_name)
             self.download_errors.append(
                 {
                     "id": str(uuid.uuid4()),
                     "title": displayed_title,
                     "url": video_url,
                     "user": user,
-                    "error": f"Already exists in library: {existing_name}",
+                    "error": msg_ptbr,
                 }
             )
             self._events.emit(
@@ -209,13 +291,15 @@ class DownloadManager:
         karaoke_channel = fetched_metadata.get("channel", "") if fetched_metadata else ""
         if title and not is_likely_karaoke_result(title, karaoke_channel):
             logging.warning("Rejected non-karaoke candidate before download: %s", displayed_title)
+            msg_raw = "Rejected because title does not look like karaoke/playback"
+            msg_ptbr = self._translate_error_to_ptbr(msg_raw)
             self.download_errors.append(
                 {
                     "id": str(uuid.uuid4()),
                     "title": displayed_title,
                     "url": video_url,
                     "user": user,
-                    "error": "Rejected because title does not look like karaoke/playback",
+                    "error": msg_ptbr,
                 }
             )
             self._events.emit(
@@ -428,6 +512,8 @@ class DownloadManager:
 
         if rc != 0:
             user_message = self._classify_download_failure(output, terminated_for_stall)
+            combined_raw = f"{user_message}: {output or 'Unknown error'}"
+            combined_ptbr = self._translate_error_to_ptbr(combined_raw)
             # Logic removed: We no longer retry synchronously as it blocks the queue.
             # Failed downloads are now failed fast and logged.
 
@@ -441,7 +527,7 @@ class DownloadManager:
                     "title": displayed_title,
                     "url": video_url,
                     "user": user,
-                    "error": f"{user_message}: {output or 'Unknown error'}",
+                    "error": combined_ptbr,
                 }
             )
         else:
@@ -476,13 +562,15 @@ class DownloadManager:
                     )
                     with contextlib.suppress(FileNotFoundError):
                         os.remove(song_path)
+                    msg_raw = f"Corrupted or invalid file removed: {validation_error}"
+                    msg_ptbr = self._translate_error_to_ptbr(msg_raw)
                     self.download_errors.append(
                         {
                             "id": str(uuid.uuid4()),
                             "title": displayed_title,
                             "url": video_url,
                             "user": user,
-                            "error": f"Corrupted or invalid file removed: {validation_error}",
+                            "error": msg_ptbr,
                         }
                     )
                     self._events.emit(
@@ -520,13 +608,15 @@ class DownloadManager:
                 logging.warning(
                     f"Could not find downloaded song in {self._download_path} matching ID: {video_id}"
                 )
+                msg_raw = "Download finished but the saved file could not be found"
+                msg_ptbr = self._translate_error_to_ptbr(msg_raw)
                 self.download_errors.append(
                     {
                         "id": str(uuid.uuid4()),
                         "title": displayed_title,
                         "url": video_url,
                         "user": user,
-                        "error": "Download finished but the saved file could not be found",
+                        "error": msg_ptbr,
                     }
                 )
                 self._events.emit(

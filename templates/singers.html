@@ -275,20 +275,41 @@
           now_b.className = "";
         }
       }
-      // ----- NEXT BANNER (proximo) -----
+      // ----- NEXT BANNER (proximo da vez) ===== CORRIGIDO 13/08: NAO CONFLITA COM BANNER VERMELHO =====
       var next_b = document.getElementById("next-banner");
       if (next_b){
-        if (window.__SINGERS_NEXT_QUEUE_USER){
-          var extra_next = "";
-          if (window.__SINGERS_NEXT_SINGER_ID){
-            var singers2 = (window.__SINGERS_LAST_LIST && window.__SINGERS_LAST_LIST.singers) || [];
-            var s2 = singers2.find(function(x){ return x.singer_id===window.__SINGERS_NEXT_SINGER_ID; });
-            if (s2){ extra_next = " — seu " + (s2.rounds_sung+1) + "º na ordem de chegada hoje: <strong>" +
-                                  window.__singers_escapeHtml(s2.name) + "</strong>"; }
+        var singers3 = (window.__SINGERS_LAST_LIST && window.__SINGERS_LAST_LIST.singers) || [];
+        var nextSingerObj = null;
+        if (window.__SINGERS_NEXT_SINGER_ID){
+          nextSingerObj = singers3.find(function(x){ return x.singer_id===window.__SINGERS_NEXT_SINGER_ID; });
+        }
+        if (nextSingerObj){
+          // ===== [LEI SAGRADA UI 13/08]: sempre mostra o NOME DO CANTOR OBRIGATORIO,
+          // NUNCA o queue_user (que pode ser Jose/Zequina de outra ordem). =====
+          // Se ele esta SEM MUSICA (pending_music): NAO MOSTRA este banner azul/verde,
+          // porque o banner VERMELHO do calls-banner já esta piscando com URGÊNCIA.
+          // Mostrar os dois ao mesmo tempo confunde o operador.
+          if (nextSingerObj.status === "pending_music"){
+            next_b.innerHTML = "";
+            next_b.className = "";
+          } else {
+            var sname = window.__singers_escapeHtml(nextSingerObj.name);
+            var infoRodada = (nextSingerObj.rounds_sung+1) + "º na ordem de chegada hoje";
+            var extra_musica = "";
+            if (window.__SINGERS_NEXT_QUEUE_USER && (nextSingerObj.status === "waiting")){
+              extra_musica = " — música já na fila como: <strong>" +
+                              window.__singers_escapeHtml(window.__SINGERS_NEXT_QUEUE_USER) +
+                              "</strong>";
+            }
+            next_b.innerHTML = '<span class="arrow">⏭️</span> PRÓXIMO A CANTAR (VEZ SAGRADA): <strong style="font-size:1.15rem">' +
+                                sname + '</strong> (' + infoRodada + ')' + extra_musica;
+            next_b.className = "singers-next-banner";
           }
+        } else if (window.__SINGERS_NEXT_QUEUE_USER){
+          // Fallback antigo: sem singer manager ativo (sem lista paralela de cantores)
           next_b.innerHTML = '<span class="arrow">⏭️</span> PRÓXIMO A CANTAR: <strong>' +
                               window.__singers_escapeHtml(window.__SINGERS_NEXT_QUEUE_USER) +
-                              '</strong>' + extra_next;
+                              '</strong>';
           next_b.className = "singers-next-banner";
         } else {
           next_b.innerHTML = "";
@@ -324,6 +345,12 @@
 
       var list = (payload && payload.singers) || [];
       window.__SINGERS_LAST_LIST = payload || null;
+      // ===== [CORRECAO 13/08: DEFINIR nowId / nextId ANTES de usar no calls-banner!] =====
+      // Antigamente eram definidos DEPOIS (na linha de map dos cards) e o calls-banner usava
+      // `nextId` com valor da requisicao ANTERIOR → bug: "Simone aparece como próxima mas
+      // o banner vermelho não aparece ou usa próximo errado".
+      var nowId  = window.__SINGERS_NOW_SINGER_ID;
+      var nextId = window.__SINGERS_NEXT_SINGER_ID;
       var countBy = {};
       list.forEach(function(s){ countBy[s.status]=(countBy[s.status]||0)+1; });
       var tags = [];
@@ -355,7 +382,7 @@
           html += '<div class="singers-urgent-next-banner">' +
                   '<span class="warn">🚨🔔🚨</span> URGENTE! É A VEZ DE: ' +
                   '<strong style="font-size:1.15rem">' + window.__singers_escapeHtml(nextSemMusica.name) +
-                  ' (PRÓXIMO(A))</strong> — CHAMAR AGORA MESMO PARA SELECIONAR MÚSICA ANTES DE COMEÇAR!' +
+                  ' (PRÓXIMO(A) DA FILA DE CANTORES)</strong> — CHAMAR AGORA MESMO PARA SELECIONAR MÚSICA ANTES DE COMEÇAR!' +
                   '</div>';
         }
         // (B) Lembrete AMARELO (sem pisca): Outros que ainda nao sao o proximo mas precisam add musica.
@@ -382,8 +409,6 @@
         window.__singers_renderMatchBanners();
         return;
       }
-      var nowId  = window.__SINGERS_NOW_SINGER_ID;
-      var nextId = window.__SINGERS_NEXT_SINGER_ID;
       var cards = list.map(function(s,i){
         var meta = STATUS_META[s.status] || {label:s.status, cls:"is-light"};
         // ============== CORRECAO BUG SEQUENCIA SIMONE → JOAO #4 ==============
@@ -420,9 +445,15 @@
         if (ocultarTag){
           meta = { label: "", cls: "" };
         }
-        var statusTagHtml = (meta.label && meta.cls) ? ('<span class="tag '+meta.cls+'">'+meta.label+'</span> ') : "";
+        // [V46 REMOVIDO BABOSEIRA INUTIL DE STATUS COLORIDO]
+        // O usuario disse e tem razao: os cards coloridos de status
+        // (tem musica, sem musica, ja cantou) nao servem para nada na
+        // pratica e so atrapalham a visualizacao. As informacoes uteis
+        // sao as TARJAS SUPERIORES (verde cantando agora / vermelha vez
+        // sagrada / azul proximo) + contador rounds_sung abaixo.
+        var statusTagHtml = "";
         var roundLabel = s.rounds_sung ? ('<span>🎤 Já cantou ' + s.rounds_sung + 'x</span>') : "";
-        var songsLabel = s.songs_added_total ? ('<span>🎶 +' + s.songs_added_total + ' músicas</span>') : "";
+        var songsLabel = "";
         var noteHtml = s.note ? ('<div class="singers-note">📝 ' + window.__singers_escapeHtml(s.note) + '</div>') : "";
         // aliases display
         var aliasesHtml = "";
@@ -450,18 +481,27 @@
           badges += '<div class="singers-badge-now">🎙️ CANTANDO AGORA</div>';
         }
         if (s.singer_id === nextId){
-          cardClass += " card-next-singer";
-          badges += '<div class="singers-badge-next">⏭️ PRÓXIMO(A)</div>';
-          // Se PROXIMO(A) estiver SEM MUSICA: adiciona piscada VERMELHA no card tambem.
-          if (s.status === "pending_music"){
+          var isNextUrgent = (s.status === "pending_music");
+          if (isNextUrgent){
+            // ===== [LEI SAGRADA UI 13/08]: PROXIMO OBRIGATORIO SEM MUSICA! =====
+            // Badge VERMELHA piscando em vez de azul. Nao deixa o operador errar.
             cardClass += " card-next-needs-music-urgent";
+            badges += '<div style="position:absolute; top:-10px; left:120px; padding:3px 10px; ' +
+                      'background:#dc2626; color:#fff; font-weight:800; font-size:.76rem; ' +
+                      'border-radius:999px; z-index:5; box-shadow: 0 4px 14px rgba(220,38,38,.65); ' +
+                      'animation: urgent-blink 0.55s ease-in-out infinite;">' +
+                      '🚨 VEZ SAGRADA BLOQUEADA</div>';
+          } else {
+            // Proximo TEM musica (waiting): normal, azul.
+            cardClass += " card-next-singer";
+            badges += '<div class="singers-badge-next">⏭️ PRÓXIMO(A)</div>';
           }
         }
         return (
           '<div class="card '+cardClass+'" data-sid="'+s.singer_id+'">'+ badges +
             '<div class="singers-row">'+
               '<div class="singers-order"><div class="ord">'+(i+1)+'</div><div class="arr">chegou às '+(s.arrival_str||'--:--')+'</div></div>'+
-              '<div class="singers-status-dot '+s.status+'" style="background:'+(s.status_color||'#94a3b8')+'" title="'+meta.label+'"></div>'+
+              '<div class="singers-status-dot '+s.status+'" style="background:'+(isNowPlaying ? '#22c55e' : (s.status_color||'#94a3b8'))+'" title="'+meta.label+'"></div>'+
               '<div class="singers-info">'+
                 '<div class="singers-name">'+window.__singers_escapeHtml(s.name)+'</div>'+
                 '<div class="singers-meta">'+
@@ -473,12 +513,8 @@
                 noteHtml+
               '</div>'+
               '<div class="singers-actions">'+
-                '<button class="button is-success is-outlined" onclick="__singers_upd(\''+s.singer_id+'\',\'waiting\')">✅ Tem música</button> '+
-                '<button class="button is-danger is-outlined"  onclick="__singers_upd(\''+s.singer_id+'\',\'pending_music\')">🔔 Sem música</button> '+
-                '<button class="button is-warning is-outlined" onclick="__singers_upd(\''+s.singer_id+'\',\'skipping\')">⏭️ Pular rodada</button> '+
-                '<button class="button is-info is-outlined"    onclick="__singers_upd(\''+s.singer_id+'\',\'sung\')">🎵 Já cantou</button> '+
-                '<button class="button is-light is-outlined"    onclick="__singers_upd(\''+s.singer_id+'\',\'left_early\')">❌ Saiu cedo</button> '+
-                '<button class="button is-danger"               onclick="__singers_rm(\''+s.singer_id+'\',\''+encodeURIComponent(s.name)+'\')"><i class="icon icon-trash-empty"></i></button>'+
+                '<button class="button is-warning" onclick="__singers_upd(\''+s.singer_id+'\',\'skipping\')">⏭️ Pular rodada</button> '+
+                '<button class="button is-danger" onclick="__singers_rm(\''+s.singer_id+'\',\''+encodeURIComponent(s.name)+'\')" title="Remover cantor (excluir definitivamente)"><i class="icon icon-trash-empty"></i> DELETAR</button>'+
               '</div>'+
             '</div>'+
           '</div>'

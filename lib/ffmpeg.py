@@ -102,52 +102,78 @@ def build_ffmpeg_cmd(
     if fr.file_path is None:
         raise ValueError("File path is required to build ffmpeg command")
 
-    # Use h/w acceleration on Pi
+    # Use h/w acceleration:
+    #   Raspberry Pi ARM -> h264_v4l2m2m (so como antes)
+    #   Intel x86/x64 (Dell OptiPlex 7010 i3/i5) -> tenta VA-API h264_vaapi se disponivel,
+    #   senao software libx264 MAS com downscale 854x480 + bitrate reduzido (2.5M) + preset
+    #   ultrafast para o Dell antigo nao travar no meio da musica por gargalo de CPU.
     using_hardware_encoder = supports_hardware_h264_encoding()
-    default_vcodec = "h264_v4l2m2m" if using_hardware_encoder else "libx264"
-
-    # CDG always needs encoding; MP4 can copy video stream (already H.264 compatible)
-    # WEBM uses VP8/VP9 which must be transcoded to H.264 for fMP4 containers
-    if is_cdg:
-        vcodec = "libx264"
+    is_x86_intel = not using_hardware_encoder and _is_intel_x86_with_vaapi()
+    if using_hardware_encoder:
+        default_vcodec = "h264_v4l2m2m"
+        default_vbitrate = "2M"
+    elif is_x86_intel:
+        # tenta usar encoder VA-API Intel (Core i3/i5 IvyBridge / SandyBridge 2a/3a geracao tem Quick Sync Video)
+        default_vcodec = "h264_vaapi" if _has_encoder("h264_vaapi") else "libx264"
+        default_vbitrate = "2500k" if default_vcodec == "h264_vaapi" else "2000k"
     else:
+        default_vcodec = "libx264"
+        default_vbitrate = "3M"
+
+    # CDG sempre precisa encoding; MP4 pode copiar stream (ja H.264) a menos que precise
+    # fazer downscale ou outra operacao.
+    if is_cdg:
+        vcodec = default_vcodec if default_vcodec == "libx264" else "libx264"
+    else:
+        # OTIMIZACAO DELL ANTIGO: para arquivos .mp4 com codec h264 E sem transpose/normalizacao
+        # COPIA stream de video e audio, ganhando velocidade extrema (0 transcode).
         vcodec = "copy" if fr.file_extension == ".mp4" else default_vcodec
 
-    # Optimize bitrate: CDG is simple graphics (500k), video files need more
-    # Pi 3B+ struggles with 5M in real-time, 2M provides better stability
+    # CDG 500k, hwenc 2M, x86 dell 2.5M vaapi / 2M sw enc, outros 3M
     if is_cdg:
         vbitrate = "500k"
     elif using_hardware_encoder:
         vbitrate = "2M"
     else:
-        vbitrate = "5M"
+        vbitrate = default_vbitrate
 
-    # Copy audio if no processing needed, otherwise re-encode with AAC
-    # CDG always re-encodes audio for compatibility
-    acodec = "aac" if is_cdg or is_transposed or normalize_audio or avsync != 0 else "copy"
+    # Audio: para evitar trabalho desnecessario no Dell, se arquivo for mp4 sem nenhum
+    # processamento de audio, COPIA audio tambem (copy). So re-encode AAC se cdg, transpose,
+    # normalize, avsync.
+    acodec = (
+        "aac"
+        if is_cdg or is_transposed or normalize_audio or avsync != 0
+        else ("copy" if fr.file_extension == ".mp4" else "aac")
+    )
 
-    # For container formats with VFR or timestamp issues, use genpts
+    # OTIMIZACAO DELL: filtro scale para 854x480 (wide 480p) quando for encoder software
+    # e arquivo nao for CDG. CPU i3/i5 antiga Nao aguenta 1080p em tempo real sem travar.
+    need_software_downscale = (
+        not is_cdg
+        and not using_hardware_encoder
+        and vcodec == "libx264"
+    )
+    need_vaapi_downscale = (
+        not is_cdg and default_vcodec == "h264_vaapi" and vcodec == "h264_vaapi"
+    )
+
     if fr.file_extension in [".webm", ".avi", ".mov", ".mkv"]:
         input = ffmpeg.input(fr.file_path, **{"fflags": "+genpts"})
     else:
         input = ffmpeg.input(fr.file_path)
     audio = input.audio
 
-    # Audio sync adjustment: delay or trim
     if avsync > 0:
         audio = audio.filter("adelay", f"{avsync * 1000}|{avsync * 1000}")
     elif avsync < 0:
         audio = audio.filter("atrim", start=-avsync)
 
-    # Pitch shifting: 2^(semitones/12)
     if is_transposed:
         audio = audio.filter("rubberband", pitch=2 ** (semitones / 12))
 
-    # Loudness normalization
     if normalize_audio:
         audio = audio.filter("loudnorm", i=-16, tp=-1.5, lra=11)
 
-    # Video source: CDG input or original video stream
     if is_cdg:
         logging.info("Playing CDG/MP3 file: " + fr.file_path)
         cdg_input = ffmpeg.input(fr.cdg_file_path, copyts=None)
@@ -156,6 +182,10 @@ def build_ffmpeg_cmd(
             video = video.filter("scale", -1, 720, flags="neighbor")
     else:
         video = input.video
+        if need_software_downscale:
+            # scale 854x480 wide, mantem aspect ratio (filtro lanczos nao, bilinear rapido)
+            video = video.filter("scale", "min(854,iw)", "min(480,ih)", flags="bilinear")
+            video = video.filter("setsar", "1/1")
 
     # Build output based on format
     if force_mp4_encoding:
@@ -286,6 +316,44 @@ def supports_hardware_h264_encoding() -> bool:
         logging.debug("ARM platform but h264_v4l2m2m not available")
 
     return has_encoder
+
+
+_HAS_ENCODER_CACHE: dict[str, bool] = {}
+
+
+def _has_encoder(name: str) -> bool:
+    """Verifica se ffmpeg tem o encoder name disponivel. Cache em memoria."""
+    if name in _HAS_ENCODER_CACHE:
+        return _HAS_ENCODER_CACHE[name]
+    try:
+        encoders_raw = subprocess.run(
+            ["ffmpeg", "-encoders"], capture_output=True, text=True, timeout=15
+        )
+    except Exception:
+        _HAS_ENCODER_CACHE[name] = False
+        return False
+    ok = f" {name} " in (" " + encoders_raw.stdout.replace("\n", " \n") + " ") or name in encoders_raw.stdout
+    logging.info(f"FFmpeg encoder '{name}' available: {ok}")
+    _HAS_ENCODER_CACHE[name] = ok
+    return ok
+
+
+def _is_intel_x86_with_vaapi() -> bool:
+    """Retorna True se for x86/x64 Intel (Dell OptiPlex) e VA-API possivelmente disponivel.
+    Nao falha: apenas heuristic. Detalhes decididos por _has_encoder em build_ffmpeg_cmd.
+    """
+    arch = platform.machine().lower()
+    is_x86 = any(v in arch for v in ["x86", "amd64", "i386", "i686"])
+    if not is_x86:
+        return False
+    try:
+        cpu = subprocess.run(
+            ["cat", "/proc/cpuinfo"], capture_output=True, text=True, timeout=5
+        ).stdout.lower()
+    except Exception:
+        # Se /proc nao existir (Win/Mac local), assume True para x86 para que o _has_encoder decida.
+        return True
+    return any(tok in cpu for tok in ["intel", "core i3", "core i5", "core i7", "pentium", "celeron"])
 
 
 def is_ffmpeg_installed() -> bool:

@@ -12,6 +12,7 @@ from queue import Queue
 from threading import Thread
 from typing import Any
 
+from pikaraoke.lib._debug_points import debug_point
 from pikaraoke.lib.events import EventSystem
 from pikaraoke.lib.ffmpeg import build_ffmpeg_cmd
 from pikaraoke.lib.file_resolver import FileResolver, is_transcoding_required
@@ -135,6 +136,56 @@ class StreamManager:
             subtitle_url = f"/subtitle/{fr.stream_uid}"
             logging.debug(f"Subtitle file found: {fr.ass_file_path}. URL: {subtitle_url}")
 
+        # ==== GARANTIA FORTISSIMA: Para HLS, ESPERA ATE .m3u8 EXISTIR NO DISCO
+        #      E TER PELO MENOS 1 SEGMENTO APONTADO NELE OU EM DISCO.
+        #      Sem isso, o splash pede GET /stream/<id>.m3u8 e o Flask retorna 404
+        #      se FFmpeg ainda nao gravou manifesto. Hls.js por padrao trata 404
+        #      de manifest como FATAL e nao retenta, causando failed to start
+        #      em 5 segundos e tela vermelha.
+        if is_hls and (is_transcoding_complete or is_buffering_complete):
+            m3u8_path = fr.output_file
+            stream_uid_str = str(fr.stream_uid)
+            t0 = time.time()
+            max_wait_s = 8.0
+            while True:
+                elapsed = time.time() - t0
+                if elapsed > max_wait_s:
+                    break
+                if (
+                    os.path.exists(m3u8_path)
+                    and os.path.getsize(m3u8_path) > 32
+                ):
+                    # Tambem conta segmentos em disco (garante pelo menos 1 .m4s ou .ts)
+                    try:
+                        seg_count = 0
+                        if os.path.isdir(fr.tmp_dir):
+                            for f in os.listdir(fr.tmp_dir):
+                                if (
+                                    stream_uid_str in f
+                                    and (f.endswith(".m4s") or f.endswith(".ts"))
+                                ):
+                                    seg_count += 1
+                                    if seg_count >= 1:
+                                        break
+                        if seg_count >= 1:
+                            # Sucesso: manifesto e primeiro segmento prontos
+                            logging.debug(
+                                f"HLS manifest pronto ({os.path.getsize(m3u8_path)}B, "
+                                f"{seg_count} segmentos). Espera total={elapsed*1000:.0f}ms."
+                            )
+                            break
+                    except FileNotFoundError:
+                        pass
+                # FFmpeg pode estar vivo ou nao; continua esperando
+                if self.ffmpeg_process and self.ffmpeg_process.poll() is not None:
+                    # processo morreu, nao adianta esperar
+                    break
+                time.sleep(0.05)
+            else:
+                # while normal end (nenhum break)
+                pass
+            # end while espera
+
         # Check if the stream is ready to play
         if is_transcoding_complete or is_buffering_complete:
             logging.debug("Stream ready!")
@@ -199,7 +250,85 @@ class StreamManager:
             avsync,
             cdg_pixel_scaling,
         )
+        cmd_line = getattr(ffmpeg_cmd, "cmd", None) or (
+            list(ffmpeg_cmd.ffmpeg_cmd) + list(ffmpeg_cmd.pipe)
+            if hasattr(ffmpeg_cmd, "ffmpeg_cmd") else None
+        )
+        #region debug-point P2 ffmpeg_start
+        try:
+            debug_point(
+                "P2_ffmpeg_start",
+                stream_uid=str(getattr(fr, "stream_uid", "")),
+                source_file=getattr(fr, "source_file", None),
+                output_file=getattr(fr, "output_file", None),
+                semitones=semitones,
+                is_hls=is_hls,
+                cmdline=str(cmd_line)[:1200] if cmd_line else None,
+            )
+        except Exception:
+            pass
+        #endregion
         self.ffmpeg_process = ffmpeg_cmd.run_async(pipe_stderr=True, pipe_stdin=True)
+        ffmpeg_started_at = time.time()
+
+        # Monitor exit do ffmpeg em thread DAEMON separada p/ nao perder exit_code
+        # (quando poll() eh chamado tardiamente nao sabemos se manifesto EXISTIA ANTES).
+        def _monitor_exit(proc, started_at, uid_str, manifest_file_path, tmp_dir_path):
+            try:
+                while True:
+                    ec = proc.poll()
+                    if ec is not None:
+                        break
+                    time.sleep(0.06)
+                uptime_s = round(time.time() - started_at, 3)
+                manifest_existed_before_exit = False
+                manifest_size = 0
+                seg_count = 0
+                try:
+                    if manifest_file_path and os.path.isfile(manifest_file_path):
+                        manifest_existed_before_exit = True
+                        manifest_size = os.path.getsize(manifest_file_path)
+                    if tmp_dir_path and os.path.isdir(tmp_dir_path):
+                        for f in os.listdir(tmp_dir_path):
+                            if uid_str and uid_str in f and (
+                                f.endswith(".m4s") or f.endswith(".ts")
+                            ):
+                                seg_count += 1
+                except OSError:
+                    pass
+                #region debug-point P2 ffmpeg_exit
+                try:
+                    debug_point(
+                        "P2_ffmpeg_exit",
+                        stream_uid=uid_str,
+                        exit_code=ec,
+                        signal=None,
+                        uptime_s=uptime_s,
+                        manifest_file=manifest_file_path,
+                        manifest_existed_before_exit=manifest_existed_before_exit,
+                        manifest_size_bytes=manifest_size,
+                        segments_count=seg_count,
+                    )
+                except Exception:
+                    pass
+                #endregion
+            except Exception:
+                pass
+        try:
+            Thread(
+                target=_monitor_exit,
+                args=(
+                    self.ffmpeg_process,
+                    ffmpeg_started_at,
+                    str(getattr(fr, "stream_uid", "")),
+                    getattr(fr, "output_file", None),
+                    getattr(fr, "tmp_dir", None),
+                ),
+                daemon=True,
+                name="ffmpeg-exit-mon",
+            ).start()
+        except Exception:
+            pass
 
         # FFmpeg outputs to stderr - prevent blocking reads
         self.ffmpeg_log = Queue()
@@ -251,7 +380,13 @@ class StreamManager:
     def _check_hls_buffer(self, fr: FileResolver, buffer_size: int) -> bool:
         """Check if HLS buffer is ready for playback.
 
-        Counts segment files directly instead of parsing the playlist.
+        OTIMIZACAO PARA INICIAR MAIS RAPIDO (Dell antigo / CPU limitada):
+        - Reduzido segmentos minimos de 3 para 1 (assim que existir 1 segmento e
+          um minimo de 96KB de dados, ja inicia o playback sem esperar mais).
+        - Antigo min_segments=3 e buffer_size>=4MB gerava espera de 3-7 segundos
+          dependendo da musica. Agora ~0.5s - 1s.
+
+        Count segment files directly instead of parsing the playlist.
         This works with hls_playlist_type=vod (playlist written at end)
         while still allowing early playback detection.
 
@@ -268,6 +403,15 @@ class StreamManager:
         if complete_transcode_before_play:
             return False
 
+        # Para iniciar mais rapido: min buffer de 96KB ou buffer_size*0.2 (o que for menor)
+        try:
+            buffer_size = max(96 * 1024, min(int(buffer_size), int(buffer_size * 0.25)))
+        except Exception:
+            buffer_size = 96 * 1024
+        # min segments: 1 (rapido) -> se for uma musica muito grande nao
+        # compromete: o FFmpeg segue gerando e o cliente vai pegando segmentos.
+        min_segments = 1
+
         try:
             # Check if the playlist exists and has content
             if not os.path.exists(fr.output_file):
@@ -281,14 +425,13 @@ class StreamManager:
                 f for f in os.listdir(fr.tmp_dir) if stream_uid_str in f and f.endswith(".m4s")
             ]
             segment_count = len(segment_files)
-            min_segments = 3
 
             if segment_count >= min_segments:
                 stream_size = fr.get_current_stream_size()
                 if stream_size >= buffer_size:
                     logging.debug(
-                        f"Buffering complete. Stream size: {stream_size}, "
-                        f"Segments: {segment_count}"
+                        f"Buffering complete FAST. Stream size: {stream_size}, "
+                        f"Segments: {segment_count} (min={min_segments}, min_buf={buffer_size}B)"
                     )
                     return True
         except FileNotFoundError:
@@ -302,6 +445,9 @@ class StreamManager:
 
     def _check_mp4_buffer(self, fr: FileResolver, buffer_size: int) -> bool:
         """Check if MP4 buffer is ready for playback.
+
+        OTIMIZACAO: minimo 128KB (ou buffer_size * 0.20, o que for menor) em vez
+        de >=buffer_size completo, para iniciar mais rapido.
 
         Args:
             fr: FileResolver instance.
@@ -317,9 +463,10 @@ class StreamManager:
             return False
 
         try:
+            min_bytes = max(128 * 1024, min(int(buffer_size), int(buffer_size * 0.25)))
             output_file_size = os.path.getsize(fr.output_file)
-            if output_file_size > buffer_size:
-                logging.debug(f"Buffering complete. File size: {output_file_size}")
+            if output_file_size > min_bytes:
+                logging.debug(f"Buffering complete FAST. File size: {output_file_size} (min={min_bytes}B)")
                 return True
         except FileNotFoundError:
             pass

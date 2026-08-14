@@ -1,5 +1,6 @@
 """Video streaming routes for transcoded media playback."""
 
+import logging
 import os
 import re
 import time
@@ -10,10 +11,58 @@ from flask_smorest import Blueprint
 
 _ = flask_babel.gettext
 
+from pikaraoke.lib._debug_points import debug_point
 from pikaraoke.lib.current_app import get_karaoke_instance
 from pikaraoke.lib.file_resolver import FileResolver, get_tmp_dir
 
 stream_bp = Blueprint("stream", __name__)
+
+
+def _stale_url_short_circuit(k, id: str) -> bool:
+    """Valida se id da stream NAO EH STALE (antigo de PID morto/reinicio).
+
+    Retorna:
+        True se ja respondemos 404 IMEDIATO (nao eh pra esperar manifesto).
+        False se deve continuar (ffmpeg vivo ou id ainda pode aparecer).
+    """
+    try:
+        pb = k.playback_controller
+        if pb is None:
+            return False
+        now_url = pb.now_playing_url
+        proc = pb.ffmpeg_process
+        ffmpeg_alive = bool(proc and proc.poll() is None)
+
+        belongs_current = False
+        if now_url:
+            # extrai id do arquivo da current now_playing_url
+            base = now_url.rsplit("/", 1)[-1] if "/" in now_url else now_url
+            cur_id_dot = base.split(".", 1)[0] if "." in base else base
+            if cur_id_dot and cur_id_dot == id:
+                belongs_current = True
+
+        if belongs_current:
+            # Eh a musica atual: normal, deve esperar FFmpeg (limitado em 1.5s abaixo)
+            return False
+
+        # NAO eh a musica atual. Arquivo ja existe? Se sim entao OK serve.
+        test_path = os.path.join(get_tmp_dir(), f"{id}.m3u8")
+        if os.path.isfile(test_path):
+            return False
+        test_path2 = os.path.join(get_tmp_dir(), f"{id}.mp4")
+        if os.path.isfile(test_path2):
+            return False
+
+        if not ffmpeg_alive:
+            logging.info(
+                "[STREAM STALE 404 RAPIDO] id=%s nao pertence now_playing_url=%s, "
+                "arquivo nao existe, ffmpeg morto. 404 imediato (antes 5s bloqueado!).",
+                id, now_url,
+            )
+            return True
+    except Exception as exc:
+        logging.debug("_stale_url_short_circuit exc: %s", exc)
+    return False
 
 
 # Serves HLS playlist file - explicit .m3u8 extension
@@ -22,20 +71,105 @@ def stream_playlist(id):
     """Serve HLS playlist file."""
     file_path = os.path.join(get_tmp_dir(), f"{id}.m3u8")
     k = get_karaoke_instance()
+    t0 = time.time()
 
+    # --- Collect pre-data for debug ---
+    pb = k.playback_controller
+    ffmpeg_proc = getattr(pb, "ffmpeg_process", None) if pb else None
+    ffmpeg_alive_before = bool(ffmpeg_proc and ffmpeg_proc.poll() is None)
+    now_url_before = getattr(pb, "now_playing_url", None) if pb else None
+    belongs_current_before = False
+    if now_url_before:
+        base = now_url_before.rsplit("/", 1)[-1] if "/" in now_url_before else now_url_before
+        cur = base.split(".", 1)[0] if "." in base else base
+        belongs_current_before = bool(cur and cur == id)
+    file_exists_before = bool(os.path.isfile(file_path))
+
+    # [NOVO V7] STALE SHORT CIRCUIT: id nao pertence a musica atual, arquivo nao existe,
+    # ffmpeg morto → 404 IMEDIATO (Nao aguarda 1.5s bloqueando thread!)
+    stale_short_circuit_used = False
+    if _stale_url_short_circuit(k, id):
+        stale_short_circuit_used = True
+        #region debug-point P3 short circuit 404
+        try:
+            debug_point(
+                "P3_stream_playlist_404_SHORT_CIRCUIT",
+                stream_id=id,
+                wait_ms=round((time.time() - t0) * 1000, 1),
+                stale_short_circuit_triggered=True,
+                belongs_current_now_playing=belongs_current_before,
+                ffmpeg_alive=ffmpeg_alive_before,
+                manifest_exists_before=False,
+                http_status=404,
+            )
+        except Exception:
+            pass
+        #endregion
+        return Response("Stale playlist (old stream id from previous restart).", status=404)
+
+    start_song_marker_called_type = "not_called"
+    start_song_validate_status = None
     # Mark song as started when client connects (idempotent)
     # Validate stream ID matches current song to prevent stale requests from setting is_playing
     if not k.playback_controller.is_playing:
         now_playing_url = k.playback_controller.now_playing_url
         if now_playing_url and id in now_playing_url:
-            k.playback_controller.start_song()
+            # NOVO V7: valida ANTES que stream realmente existe e nao eh STALE
+            status = k.playback_controller.validate_now_playing_alive()
+            start_song_validate_status = status
+            if status in ("ok", "waiting_ffmpeg_data"):
+                k.playback_controller.start_song(stream_id_marker=f"hls-{id}")
+                start_song_marker_called_type = "called_accepted"
+            else:
+                start_song_marker_called_type = "skipped_invalid_status"
+                logging.info(
+                    "[stream_playlist] Nao marcando start_song: status=%s id=%s url=%s",
+                    status, id, now_playing_url,
+                )
 
-    # Wait for playlist file to exist
-    max_wait = 50  # 5 seconds max
+    # Wait for playlist file to exist (NOVO V7: 1.5s max, antes era 5s → trava thread)
+    max_wait = 15  # 1.5 seconds total (15 * 100ms)
     wait_count = 0
     while not os.path.exists(file_path) and wait_count < max_wait:
         time.sleep(0.1)
         wait_count += 1
+
+    wait_ms_total = round((time.time() - t0) * 1000, 1)
+    file_exists_after_wait = bool(os.path.exists(file_path))
+    http_status = 200 if file_exists_after_wait else 404
+    #region debug-point P3 stream playlist request
+    try:
+        if http_status == 404:
+            debug_point(
+                "P3_stream_playlist_404_AFTER_TIMEOUT",
+                stream_id=id,
+                wait_ms=wait_ms_total,
+                stale_short_circuit_triggered=stale_short_circuit_used,
+                belongs_current_now_playing=belongs_current_before,
+                ffmpeg_alive=ffmpeg_alive_before,
+                manifest_exists_before=file_exists_before,
+                manifest_exists_after_timeout=file_exists_after_wait,
+                start_song_called=start_song_marker_called_type,
+                start_song_validate_status=start_song_validate_status,
+                http_status=404,
+            )
+        else:
+            debug_point(
+                "P3_stream_playlist_OK_200",
+                stream_id=id,
+                wait_ms=wait_ms_total,
+                stale_short_circuit_triggered=stale_short_circuit_used,
+                belongs_current_now_playing=belongs_current_before,
+                ffmpeg_alive=ffmpeg_alive_before,
+                manifest_exists_before=file_exists_before,
+                manifest_exists_after_timeout=file_exists_after_wait,
+                start_song_called=start_song_marker_called_type,
+                start_song_validate_status=start_song_validate_status,
+                http_status=200,
+            )
+    except Exception:
+        pass
+    #endregion
 
     if os.path.exists(file_path):
         # Read file content and return with no-cache headers
@@ -127,7 +261,7 @@ def stream_progressive_mp4(id):
     if not k.playback_controller.is_playing:
         now_playing_url = k.playback_controller.now_playing_url
         if now_playing_url and id in now_playing_url:
-            k.playback_controller.start_song()
+            k.playback_controller.start_song(stream_id_marker=f"mp4-{id}")
 
     # Wait for output file to exist
     max_wait = 50  # 5 seconds max
@@ -199,7 +333,7 @@ def stream_full(id):
     if not k.playback_controller.is_playing:
         now_playing_url = k.playback_controller.now_playing_url
         if now_playing_url and id in now_playing_url:
-            k.playback_controller.start_song()
+            k.playback_controller.start_song(stream_id_marker=f"full-{id}")
 
     file_path = os.path.join(get_tmp_dir(), f"{id}.mp4")
     return stream_file_path_full(file_path)

@@ -9,8 +9,8 @@ let autoplayConfirmed = false;
 let volume = 0.85;
 const playbackStartTimeout = 90000;
 const bgMediaResumeDelay = 2000;
-const prematureEndThresholdSeconds = 60;
-const maxPlaybackRecoveryAttempts = 2;
+const prematureEndThresholdSeconds = 120;
+const maxPlaybackRecoveryAttempts = 4;
 let isScoreShown = false;
 const hasBgVideo = PikaraokeConfig.hasBgVideo;
 let currentVideoUrl = null;
@@ -29,6 +29,8 @@ let uiScale = null;
 let clockIntervalId = null;
 let playbackRecoveryAttempts = 0;
 let playbackResumeHint = null;
+let playbackStartGuardTimer = null;
+let startSongSent = false;
 
 // Browser detection
 const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
@@ -59,38 +61,69 @@ const formatTime = (seconds) => {
 }
 
 const testAutoplayCapability = async () => {
-  // Test if autoplay with audio is allowed using a real video file
   try {
     const testVideo = document.createElement('video');
     testVideo.playsInline = true;
-    testVideo.muted = true;  // Start muted (always allowed)
-    testVideo.src = "/static/video/test_autoplay.mp4";
-
-    // Wait for video to be ready
-    await new Promise((resolve, reject) => {
-      testVideo.onloadeddata = resolve;
-      testVideo.onerror = reject;
-    });
-
-    await testVideo.play();
-    // Now try to unmute - this is the real test
-    testVideo.muted = false;
-    testVideo.volume = 0.01;
-
-    // Brief delay to let browser enforce policy
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Check if browser paused or muted the video
-    if (testVideo.muted || testVideo.paused) {
-      testVideo.pause();
-      $('#permissions-modal').addClass('is-active');
+    testVideo.muted = true;
+    let testSrc = "/static/video/test_autoplay.mp4";
+    let probeOk = true;
+    try {
+      await new Promise((resolve, reject) => {
+        const probe = new XMLHttpRequest();
+        probe.open("HEAD", testSrc, true);
+        probe.onreadystatechange = () => {
+          if (probe.readyState === 4) {
+            if (probe.status >= 200 && probe.status < 400) resolve();
+            else reject();
+          }
+        };
+        probe.onerror = reject;
+        probe.timeout = 2000;
+        probe.ontimeout = reject;
+        probe.send();
+      });
+    } catch (_) {
+      probeOk = false;
+    }
+    if (probeOk) {
+      testVideo.src = testSrc;
+      await new Promise((resolve, reject) => {
+        testVideo.onloadeddata = resolve;
+        testVideo.onerror = reject;
+        setTimeout(() => reject(new Error("load-timeout")), 3500);
+      });
+      await testVideo.play();
+      testVideo.muted = false;
+      testVideo.volume = 0.01;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (testVideo.muted || testVideo.paused) {
+        testVideo.pause();
+        $('#permissions-modal').addClass('is-active');
+      } else {
+        testVideo.pause();
+        handleConfirmation();
+      }
     } else {
-      testVideo.pause();
-      handleConfirmation();
+      testVideo.muted = true;
+      testVideo.playsInline = true;
+      testVideo.srcObject = null;
+      testVideo.setAttribute("autoplay", "true");
+      const canSilentPlay = document.createElement("video");
+      canSilentPlay.muted = true;
+      canSilentPlay.playsInline = true;
+      canSilentPlay.setAttribute("autoplay", "true");
+      try {
+        const playPromise = canSilentPlay.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(() => {});
+        }
+        handleConfirmation();
+      } catch (_) {
+        $('#permissions-modal').addClass('is-active');
+      }
     }
   } catch (e) {
-    // Autoplay blocked
-    console.log("Autoplay error thrown", e);
+    console.log("Autoplay check fell back to modal:", e);
     $('#permissions-modal').addClass('is-active');
   }
 };
@@ -123,7 +156,13 @@ const isPrematureEnd = (video) => {
     ? nowPlaying.now_playing_duration
     : (Number.isFinite(video.duration) ? video.duration : null);
   const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-  return duration !== null && position < (duration - prematureEndThresholdSeconds);
+  if (duration === null) {
+    // V37: duration DESCONHECIDO (HLS sem metadata, Chrome/ffmpeg nao informou).
+    // Tratar como "prematuro" se tocamos MENOS DE 120s (2min). Apenas apos 2min
+    // seguidos tocando aceitamos que acabou mesmo sem saber duration total.
+    return position < 120;
+  }
+  return position < (duration - prematureEndThresholdSeconds);
 };
 
 const tryPlaybackRecovery = (reason, mode = "combined") => {
@@ -376,10 +415,20 @@ const handleNowPlayingUpdate = (np) => {
   if (np.now_playing_url && np.now_playing_url !== currentVideoUrl) {
     currentVideoUrl = np.now_playing_url;
     playbackRecoveryAttempts = 0;
+    startSongSent = false;
+    if (playbackStartGuardTimer) {
+      clearTimeout(playbackStartGuardTimer);
+      playbackStartGuardTimer = null;
+    }
     const streamUrl = np.now_playing_url;
     $("#video-source").attr("src", "");
     video.load();
     $("#video-source").attr("src", streamUrl);
+
+    video.muted = video.muted || false;
+    video.setAttribute("muted", video.muted ? "muted" : "");
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
 
     if (streamUrl.endsWith('.m3u8')) {
       const useNativeHLS = video.canPlayType('application/vnd.apple.mpegurl') && !isChrome && !isEdge && !isMobileSafari;
@@ -387,10 +436,61 @@ const handleNowPlayingUpdate = (np) => {
         video.src = streamUrl;
       } else {
         if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-        hlsInstance = new Hls({ startPosition: 0 });
+        hlsInstance = new Hls({
+          startPosition: 0,
+          manifestLoadingMaxRetry: 12,
+          manifestLoadingMaxRetryTime: 30000,
+          manifestLoadingRetryDelay: 800,
+          levelLoadingMaxRetry: 10,
+          levelLoadingMaxRetryTime: 25000,
+          levelLoadingRetryDelay: 800,
+          fragLoadingMaxRetry: 10,
+          fragLoadingMaxRetryTime: 25000,
+          fragLoadingRetryDelay: 600,
+          lowLatencyMode: false,
+          backBufferLength: 30,
+          enableWorker: true,
+          xhrSetup: (xhr, url) => {
+            xhr.addEventListener('error', () => {});
+            // Custom XHR wrapper: for 404/5xx responses, force them to act like
+            // recoverable network errors (Hls.js will retry based on *LoadingMaxRetry settings).
+            // Without this, Hls.js treats HTTP 404 for manifest as FATAL (non-retryable),
+            // which is exactly the failure we see on transitions (FFmpeg hasn't written
+            // the playlist yet when Splash first asks).
+            const originalOnReadyStateChange = xhr.onreadystatechange;
+            xhr.onreadystatechange = function (...args) {
+              if (xhr.readyState === 4) {
+                const status = xhr.status;
+                if ((status === 404 || (status >= 500 && status < 600)) && !status._trae_forced) {
+                  // Fake a network-level abort so Hls.js classifies this as
+                  // ErrorDetails.{MANIFEST,LEVEL,FRAG}_LOAD_ERROR (retryable)
+                  // instead of {MANIFEST,LEVEL,FRAG}_LOAD_ERROR_404 (fatal).
+                  try { Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true }); } catch (_) { xhr.status = 0; }
+                  try { Object.defineProperty(xhr, 'readyState', { value: 0, writable: true, configurable: true }); } catch (_) { }
+                  return;
+                }
+              }
+              if (typeof originalOnReadyStateChange === 'function') {
+                return originalOnReadyStateChange.apply(this, args);
+              }
+            };
+          }
+        });
         hlsInstance.on(Hls.Events.ERROR, (_event, data) => {
           console.error("HLS error:", data);
           if (!data?.fatal) return;
+
+          // Extra defensive layer: if still got a fatal for 404-style load error,
+          // try to re-start the same source one more time instead of ending song.
+          if (
+            data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+            data.response &&
+            (data.response.code === 404 || (data.response.code >= 500 && data.response.code < 600))
+          ) {
+            if (tryPlaybackRecovery(`hls-network-${data.details}-status-${data.response.code}`, "network")) {
+              return;
+            }
+          }
 
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR && tryPlaybackRecovery(`hls-network-${data.details}`, "network")) {
             return;
@@ -417,11 +517,30 @@ const handleNowPlayingUpdate = (np) => {
 
     $("#video-container").show();
 
-    video.play().catch(err => {
-      console.error('Play failed:', err);
-      // Retry once if it was an autoplay block
-      setTimeout(() => video.play(), 1000);
-    });
+    const attemptPlay = () => {
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch((err) => {
+          console.error('Play failed (1st attempt):', err);
+          if (!video.muted) {
+            video.muted = true;
+            video.setAttribute("muted", "muted");
+            const retry2 = video.play();
+            if (retry2 && typeof retry2.catch === "function") {
+              retry2.catch(err2 => {
+                console.error('Play failed (muted fallback):', err2);
+                setTimeout(() => {
+                  video.play().catch(err3 => console.error("Final play retry failed:", err3));
+                }, 1000);
+              });
+            }
+          } else {
+            setTimeout(() => video.play().catch(err2 => console.error("2s play retry failed:", err2)), 1000);
+          }
+        });
+      }
+    };
+    attemptPlay();
 
     if (np.now_playing_position && isMediaPlaying(video)) {
       if (Math.abs(video.currentTime - np.now_playing_position) > 2) {
@@ -430,9 +549,12 @@ const handleNowPlayingUpdate = (np) => {
       }
     }
 
-    setTimeout(() => {
-      if (!isMediaPlaying(video) && !video.paused) {
+    playbackStartGuardTimer = setTimeout(() => {
+      if (!isMediaPlaying(video) && (video.paused || video.readyState <= 1)) {
+        console.warn("Playback guard timeout fired (90s) and nothing played — triggering endSong(\"failed to start\")");
         endSong("failed to start");
+      } else {
+        if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
       }
     }, playbackStartTimeout);
   }
@@ -505,12 +627,22 @@ const setupOverlayMenus = () => {
 const setupVideoPlayer = () => {
   $('#video-container').hide();
   const video = getVideoPlayer();
+
   video.addEventListener("play", () => {
     $("#video-container").show();
-    if (isMaster) {
-      setTimeout(() => { socket.emit("start_song") }, 1200);
-    }
   });
+
+  const confirmPlaybackStartedOnce = () => {
+    if (startSongSent || !isMaster) return;
+    if (video.currentTime > 0.5 && isMediaPlaying(video)) {
+      startSongSent = true;
+      if (playbackStartGuardTimer) {
+        clearTimeout(playbackStartGuardTimer);
+        playbackStartGuardTimer = null;
+      }
+      socket.emit("start_song");
+    }
+  };
 
   // Master reports playback position to server
   setInterval(() => {
@@ -520,13 +652,24 @@ const setupVideoPlayer = () => {
   }, 1000);
 
   video.addEventListener("ended", () => {
+    startSongSent = false;
+    if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
     if (isPrematureEnd(video) && tryPlaybackRecovery("video-ended-early")) {
       return;
     }
     endSong(isPrematureEnd(video) ? "video-ended-early" : "complete", !isPrematureEnd(video));
   });
-  video.addEventListener("timeupdate", (e) => { $("#current").text(formatTime(video.currentTime)); });
+  video.addEventListener("timeupdate", () => {
+    $("#current").text(formatTime(video.currentTime));
+    confirmPlaybackStartedOnce();
+    if (video.currentTime > 1.0 && playbackStartGuardTimer) {
+      clearTimeout(playbackStartGuardTimer);
+      playbackStartGuardTimer = null;
+    }
+  });
   $("#video source")[0].addEventListener("error", (e) => {
+    startSongSent = false;
+    if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
     if (tryPlaybackRecovery("source-error")) {
       return;
     }
@@ -535,6 +678,8 @@ const setupVideoPlayer = () => {
     }
   });
   video.addEventListener("error", () => {
+    startSongSent = false;
+    if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
     if (tryPlaybackRecovery("video-error")) {
       return;
     }
@@ -545,6 +690,8 @@ const setupVideoPlayer = () => {
   window.addEventListener(
     'beforeunload',
     function (event) {
+      startSongSent = false;
+      if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
       if (isMediaPlaying(video)) {
         endSong("splash screen closed");
       }
@@ -713,6 +860,111 @@ const setupSocketEvents = () => {
     }
   });
   socket.on("now_playing", handleNowPlayingUpdate);
+  socket.on("playback_stream_url_changed", (payload) => {
+    // [V11 FIX-B BUG2 SEM SOM] Mesma musica, NOVA URL stream (retry do ffmpeg).
+    // Trocar source do HLS imediatamente, NAO ESPERAR now_playing_update
+    // (que pode demorar ou ate mesmo nao trocar se o title do now_playing
+    //  for igual). Preserva posicao atual do video para nao voltar ao comeco.
+    const newUrl = payload && payload.new_url;
+    if (!newUrl) return;
+    const newSubtitleUrl = payload && payload.new_subtitle_url;
+    console.warn("[V11] playback_stream_url_changed! newUrl=", newUrl, "old=", currentVideoUrl);
+    const video = getVideoPlayer();
+    const savedPos = video && isFinite(video.currentTime) ? Math.max(0, video.currentTime - 0.5) : 0;
+    currentVideoUrl = newUrl;
+    playbackRecoveryAttempts = 0;
+    startSongSent = false;
+    if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
+
+    // Atualizar subtitle (se mudou)
+    if (newSubtitleUrl) {
+      if (octopusInstance) { try { octopusInstance.dispose(); } catch (_) {} octopusInstance = null; }
+      try {
+        octopusInstance = new SubtitlesOctopus({
+          video: video, subUrl: newSubtitleUrl,
+          fonts: ["/static/fonts/Arial.ttf", "/static/fonts/DroidSansFallback.ttf"],
+          debug: true, workerUrl: "/static/js/subtitles-octopus-worker.js"
+        });
+      } catch (_) {}
+    }
+
+    $("#video-source").attr("src", "");
+    video.load();
+    $("#video-source").attr("src", newUrl);
+    video.muted = video.muted || false;
+    video.setAttribute("muted", video.muted ? "muted" : "");
+
+    if (newUrl.endsWith('.m3u8')) {
+      const useNativeHLS = video.canPlayType('application/vnd.apple.mpegurl') && !isChrome && !isEdge && !isMobileSafari;
+      if (useNativeHLS) {
+        video.src = newUrl;
+      } else {
+        if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
+        hlsInstance = new Hls({
+          startPosition: savedPos || 0,
+          manifestLoadingMaxRetry: 12, manifestLoadingMaxRetryTime: 30000, manifestLoadingRetryDelay: 800,
+          levelLoadingMaxRetry: 10, levelLoadingMaxRetryTime: 25000, levelLoadingRetryDelay: 800,
+          fragLoadingMaxRetry: 10, fragLoadingMaxRetryTime: 25000, fragLoadingRetryDelay: 600,
+          lowLatencyMode: false, backBufferLength: 30, enableWorker: true,
+          xhrSetup: (xhr, url) => {
+            xhr.addEventListener('error', () => {});
+            const originalOnReadyStateChange = xhr.onreadystatechange;
+            xhr.onreadystatechange = function (...args) {
+              if (xhr.readyState === 4) {
+                const status = xhr.status;
+                if ((status === 404 || (status >= 500 && status < 600)) && !status._trae_forced) {
+                  try { Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true }); } catch (_) { xhr.status = 0; }
+                  try { Object.defineProperty(xhr, 'readyState', { value: 0, writable: true, configurable: true }); } catch (_) {}
+                  return;
+                }
+              }
+              if (typeof originalOnReadyStateChange === 'function') return originalOnReadyStateChange.apply(this, args);
+            };
+          }
+        });
+        hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (savedPos > 1) {
+            try { video.currentTime = savedPos; } catch (_) {}
+          }
+          const p = video.play();
+          if (p && typeof p.catch === "function") p.catch(e => {
+            if (!video.muted) { video.muted = true; video.play().catch(()=>{}); }
+          });
+        });
+        hlsInstance.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data?.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+              data.response && (data.response.code === 404 || (data.response.code >= 500 && data.response.code < 600))) {
+            if (tryPlaybackRecovery(`hls-network-${data.details}-status-${data.response.code}`,"network")) return;
+          }
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && tryPlaybackRecovery(`hls-network-${data.details}`,"network")) return;
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR   && tryPlaybackRecovery(`hls-media-${data.details}`,"media"))   return;
+          endSong(`hls-fatal-urlchange-${data.type||"unknown"}-${data.details||"unknown"}`);
+        });
+        hlsInstance.loadSource(newUrl);
+        hlsInstance.attachMedia(video);
+      }
+    }
+
+    video.load();
+    if (!newUrl.endsWith('.m3u8')) {
+      setTimeout(() => {
+        if (savedPos > 1 && video) { try { video.currentTime = savedPos; } catch (_) {} }
+        video.play().catch(e => {
+          if (!video.muted) { video.muted = true; video.play().catch(()=>{}); }
+        });
+      }, 180);
+    }
+
+    playbackStartGuardTimer = setTimeout(() => {
+      if (!isMediaPlaying(video) && (video.paused || video.readyState <= 1)) {
+        console.warn("[V11-urlchange] Playback guard timeout — firing end_song failed to start");
+        endSong("failed to start (after url change)");
+      } else {
+        if (playbackStartGuardTimer) { clearTimeout(playbackStartGuardTimer); playbackStartGuardTimer = null; }
+      }
+    }, playbackStartTimeout);
+  });
   socket.on("preferences_update", applyPreferenceUpdate);
   socket.on("preferences_reset", applyPreferencesReset);
   socket.on("score_phrases_update", (phrases) => { scoreReviews = phrases; });
