@@ -392,6 +392,55 @@
 	#yp-empty { text-align: center; color: #bdbdbd; padding: 0.45rem 0.3rem; font-size: 0.78rem; line-height: 1.45; }
 	#youtube-preview-panel.active #yp-empty { display: none; }
 
+	/* ============================================================
+	   V75: Player HTML5 GRANDE DENTRO da area principal (yp-main).
+	   3 MODOS de exibicao do yp-main (area 16:9):
+	     MODO 1 (default / nao clicou nada): mostra #yp-thumb (capa).
+	     MODO 2 (clicou na capa = iframe):      mostra #yp-iframe (embed).
+	     MODO 3 (clicou OUVIR AQUI = stream):   mostra #yp-stream-player (GRANDE,
+	            centralizado, ocupando TODO o yp-main, nao mais minúsculo abaixo).
+	   ============================================================ */
+	.yp-stream-player-big {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		border: 0;
+		border-radius: 8px;
+		background: #000;
+		display: none;
+		z-index: 4;
+	}
+	/* Quando stream esta carregado (tem src valido) -> player GRANDE aparece */
+	.yp-stream-player-big[src]:not([src=""]):not([src="about:blank"]) { display: block; }
+	/* Quando stream player GRANDE esta visivel, ESCONDE thumb e iframe (evita sobreposicao
+	   e evita que o iframe "Video Indisponivel" apareca por cima do stream que esta tocando!) */
+	.yp-stream-player-big.show + *,
+	#yp-main.yp-stream-active #yp-thumb,
+	#yp-main.yp-stream-active #yp-iframe { display: none !important; }
+	#yp-main.yp-stream-active .yp-stream-player-big { display: block !important; }
+
+	/* ============================================================
+	   V75: Overlay AMARELO quando iframe embed esta BLOQUEADO
+	   ("Video Indisponivel" do YouTube). Nunca mais tela cinza feia!
+	   ============================================================ */
+	#yp-embed-blocked-overlay {
+		position: absolute;
+		inset: 0;
+		z-index: 5;
+		background: linear-gradient(180deg, #fff7cd 0%, #ffe08a 100%);
+		border: 1px solid #c9a227;
+		border-radius: 8px;
+		padding: 0.6rem 0.65rem;
+		color: #5a4500;
+		overflow-y: auto;
+	}
+	.yp-ebo-box { display: flex; flex-direction: column; gap: 0.25rem; align-items: center; justify-content: flex-start; height: 100%; }
+	.yp-ebo-title { font-weight: 700; font-size: 0.78rem; text-align: center; margin: 0; }
+	.yp-ebo-text { font-size: 0.68rem; text-align: center; line-height: 1.4; margin: 0.1rem 0 0.15rem 0; }
+	.yp-ebo-list { margin: 0; padding: 0 0 0 0.55rem; font-size: 0.66rem; list-style: none; line-height: 1.55; text-align: left; }
+	.yp-ebo-list li { margin: 0; padding: 0; }
+
 	/* V74: BOTOES MENORES (cabem em 360px) */
 	#yp-buttons-row {
 		display: none;
@@ -413,17 +462,9 @@
 		white-space: nowrap;
 	}
 	#yp-stream-status { font-size: 0.68rem; padding: 0.2rem 0.45rem; width: 100%; text-align: center; margin-top: 0.25rem; }
-	#yp-stream-player {
-		width: 100%;
-		margin-top: 0.5rem;
-		border-radius: 7px;
-		max-height: 150px;
-		background: black;
-		display: none;
-	}
-	#youtube-preview-panel.active + #yp-stream-player,
-	#yp-stream-player[src]:not([src=""]) { display: block; }
-	#youtube-preview-panel.active #yp-stream-player { display: block; }
+	/* V75: #yp-stream-player agora DENTRO de #yp-main (player GRANDE).
+	   Regras antigas (abaixo dos botoes, minúsculo 150px) REMOVIDAS (erro).
+	   Regras novas em .yp-stream-player-big (position absolute, inset 0, 100% area). */
 	#youtube-preview-panel.active {
 		opacity: 1;
 		border-color: #3e8ed0;
@@ -1091,6 +1132,32 @@
 			if (!yp_current.url) ytLink.style.display = "none";
 			else ytLink.style.display = "inline";
 
+			// [V75: RESET DOS MODOS DA AREA PRINCIPAL (yp-main)]
+			// Quando troca video, volta ao MODO 1 (apenas thumbnail visivel).
+			// Remove stream player, iframe block overlay, etc.
+			var main = document.getElementById("yp-main");
+			if (main) {
+				main.classList.remove("yp-stream-active");
+				// Esconde overlay "Video bloqueado"
+				var ov = document.getElementById("yp-embed-blocked-overlay");
+				if (ov) ov.style.display = "none";
+				// Mostra thumbnail, esconde iframe e stream-player por enquanto
+				var thumb = document.getElementById("yp-thumb");
+				if (thumb) { try { thumb.style.display = "block"; } catch(e) {} }
+				var ifr = document.getElementById("yp-iframe");
+				if (ifr) { ifr.style.display = "block"; ifr.src = "about:blank"; }
+				// Reseta stream player grande
+				var sp = document.getElementById("yp-stream-player");
+				if (sp) {
+					try { sp.pause(); } catch(e) {}
+					try { sp.removeAttribute("src"); } catch(e) {}
+					try { sp.load(); } catch(e) {}
+					try { sp.classList.remove("show"); } catch(e) {}
+				}
+				var ss = document.getElementById("yp-stream-status");
+				if (ss) { ss.style.display = "none"; ss.className = "tag"; ss.textContent = ""; }
+			}
+
 			// [V64 - CORREÇÃO CRITICA]:
 			//   ANTES: maxresdefault (1ª opção) → NÃO EXISTE em 70% dos vídeos YouTube →
 			//          new Image().onerror demora 20 a 30 SEGUNDOS de timeout HTTP
@@ -1135,12 +1202,23 @@
 			document.getElementById("yp-actions").style.display = "none";
 			var main = document.getElementById("yp-main");
 			main.classList.remove("playing");
+			// [V75]: Reset tambem modos do yp-main (igual yp_setPreview)
+			main.classList.remove("yp-stream-active");
+			var ov = document.getElementById("yp-embed-blocked-overlay");
+			if (ov) ov.style.display = "none";
 			var iframe = main.querySelector("iframe");
 			if (iframe) iframe.src = "about:blank";
-			document.getElementById("yp-thumb").src = "";
+			var thumb = document.getElementById("yp-thumb");
+			if (thumb) { thumb.style.display = "block"; thumb.src = ""; }
+			if (iframe) iframe.style.display = "block";
 			// [V67]: PARAR O STREAM PLAYER HTML5 quando resetar
 			var sp = document.getElementById("yp-stream-player");
-			if (sp) { try { sp.pause(); } catch (e) {} sp.removeAttribute("src"); sp.load(); sp.style.display = "none"; }
+			if (sp) {
+				try { sp.pause(); } catch (e) {}
+				try { sp.removeAttribute("src"); } catch(e) {}
+				try { sp.load(); } catch (e) {}
+				try { sp.classList.remove("show"); } catch(e) {}
+			}
 			var ss = document.getElementById("yp-stream-status");
 			if (ss) { ss.style.display = "none"; ss.className = "tag"; ss.textContent = ""; }
 			// Remove highlight
@@ -1155,10 +1233,19 @@
 		function yp_playPause(forcePause) {
 			var main = document.getElementById("yp-main");
 			var iframe = main.querySelector("iframe");
-			// [V67]: ANTES DE QUALQUER COISA, se estiver tocando STREAM URL HTML5, PARA ELE
+			// [V75]: Esconde overlay amarelo de bloqueio quando o usuario clica de novo (play/pause toggle)
+			var ov = document.getElementById("yp-embed-blocked-overlay");
+			if (ov) ov.style.display = "none";
+			// [V67 + V75]: ANTES DE QUALQUER COISA, se estiver tocando STREAM URL HTML5, PARA ELE
 			// (evita 2 sons ao mesmo tempo)
 			var sp = document.getElementById("yp-stream-player");
-			if (sp && !sp.paused) { try { sp.pause(); } catch (e) {} sp.removeAttribute("src"); sp.load(); sp.style.display = "none"; }
+			if (sp && !sp.paused) {
+				try { sp.pause(); } catch (e) {}
+				try { sp.removeAttribute("src"); } catch(e) {}
+				try { sp.load(); } catch (e) {}
+				try { sp.classList.remove("show"); } catch(e) {}
+				main.classList.remove("yp-stream-active");
+			}
 			if (!yp_current.id) return;
 			if (forcePause === true || yp_current.playing) {
 				// Pausar: tira o playing (mostra thumb de novo) e reseta src do iframe
@@ -1182,6 +1269,35 @@
 						+ "?autoplay=1&rel=0&controls=1&playsinline=1&enablejsapi=1"
 						+ "&iv_load_policy=3&cc_load_policy=0&fs=1&modestbranding=1";
 				}
+				// [V75 HOTFIX OVERLAY BLOQUEADO]:
+				// Muitos videos de karaoke tem embedding desabilitado. O iframe YT
+				// retorna "Video indisponível" mas nao manda NENHUM evento cross-origin
+				// para o nosso script (nao tem como detectar on/off error).
+				// SOLUCAO: Se depois de 2.8 segundos o iframe AINDA esta no mesmo
+				// SRC embed (nao ocorreu redirect / erro cross-origin detectavel),
+				// mostra o overlay AMARELO amigavel explicando: use os botoes ABAIXO!
+				var expectedSrc = iframe ? iframe.src : "";
+				var ytIdNow = yp_current.id;
+				setTimeout(function () {
+					// Se o usuario JA mudou de video (nao eh o mesmo id), nao mostra
+					if (!yp_current.id || yp_current.id !== ytIdNow) return;
+					// Se ja nao esta mais playing, nao mostra
+					if (!yp_current.playing) return;
+					// Se o iframe agora esta about:blank (pausou), nao mostra
+					if (iframe && iframe.src === "about:blank") return;
+					// Se STREAM PLAYER esta ativo => nao mostra
+					var spNow = document.getElementById("yp-stream-player");
+					if (spNow && spNow.src && spNow.src !== "" && spNow.src !== "about:blank") return;
+					if (main.classList.contains("yp-stream-active")) return;
+					// Tudo indica: iframe carregou mas provavelmente "Video Indisponivel".
+					// Mostra overlay amarelo!
+					var ovNow = document.getElementById("yp-embed-blocked-overlay");
+					if (ovNow) {
+						ovNow.style.display = "block";
+						// Garante thumb/iframe nao atrapalhem o overlay
+						try { document.getElementById("yp-thumb").style.opacity = "0.1"; } catch(e){}
+					}
+				}, 2800);
 			}
 		}
 
@@ -1360,6 +1476,9 @@
 			var stPlayer = document.getElementById("yp-stream-player");
 			var stStatus = document.getElementById("yp-stream-status");
 			var main = document.getElementById("yp-main");
+			var iframe = document.getElementById("yp-iframe");
+			var thumb = document.getElementById("yp-thumb");
+			var eboOverlay = document.getElementById("yp-embed-blocked-overlay");
 
 			// UI loading
 			if (stStatus) {
@@ -1369,8 +1488,12 @@
 			}
 			if (btnSt) { btnSt.classList.add("is-loading"); btnSt.disabled = true; }
 
-			// Se estava tocando no iframe, para
+			// Se estava tocando no iframe, para e remove
 			if (yp_current.playing) yp_playPause(true);
+			// Esconde overlay de bloqueio (se estava aparecendo)
+			if (eboOverlay) eboOverlay.style.display = "none";
+			// Mostra frame do main, mas em modo stream
+			if (main) main.classList.add("yp-stream-active");
 
 			try {
 				var previewUrl = "{{ url_for('search.preview') }}" + "?url=" + encodeURIComponent(url);
@@ -1384,16 +1507,35 @@
 				var streamUrl = data.stream_url;
 				if (!streamUrl) throw new Error("Nenhuma URL de stream retornada");
 
-				// Toca no player HTML5 nativo (nao usa iframe YouTube)
-				stPlayer.style.display = "block";
-				stPlayer.src = streamUrl;
-				try { stPlayer.muted = false; stPlayer.volume = 0.85; } catch (e) {}
-				var playProm = stPlayer.play();
-				if (playProm && typeof playProm.then === "function") {
-					playProm.catch(function (err) {
-						console.warn("auto-play bloqueado, esperando clique:", err);
-					});
+				// [V75 MUDANCA FATAL]:
+				// ANTES: stPlayer ficava ABAIXO dos botoes (150px), pequeno, ilegivel,
+				// enquanto o iframe "Video Indisponivel" continuava aparecendo na area
+				// principal (efeito horrivel, usuario achava que nao funcionava!).
+				// AGORA: stPlayer fica DENTRO do yp-main (area principal, 16:9,
+				// mesma posicao do thumbnail/iframe), OCUPA 100% da area, e a classe
+				// yp-stream-active em main faz com que iframe E thumb sejam ESCONDIDOS
+				// (display: none !important). Agora usuario VE o video tocando em TAMANHO GRANDE,
+				// nao ve mais "Video Indisponivel" nenhum na tela principal, acabou a confusao!
+				if (stPlayer) {
+					// Garante que vai mostrar
+					try { stPlayer.classList.add("show"); } catch (e) {}
+					stPlayer.style.display = "block";
+					stPlayer.style.position = "absolute";
+					stPlayer.style.inset = "0";
+					stPlayer.style.zIndex = "10";
+					stPlayer.src = streamUrl;
+					try { stPlayer.muted = false; stPlayer.volume = 0.9; } catch (e) {}
+					var playProm = stPlayer.play();
+					if (playProm && typeof playProm.then === "function") {
+						playProm.catch(function (err) {
+							console.warn("auto-play bloqueado no stream, esperando clique:", err);
+						});
+					}
 				}
+				// Esconde thumbnail e iframe explicitamente (redundancia segura)
+				try { thumb.style.display = "none"; thumb.style.opacity = "1"; } catch(e) {}
+				try { iframe.style.display = "none"; } catch(e) {}
+
 				if (stStatus) {
 					stStatus.className = "tag is-success";
 					stStatus.style.display = "inline-block";
@@ -1401,6 +1543,8 @@
 				}
 			} catch (err) {
 				console.error("Stream URL falhou:", err);
+				// Remove classe stream-active (nao funcionou)
+				if (main) main.classList.remove("yp-stream-active");
 				if (stStatus) {
 					stStatus.className = "tag is-danger";
 					stStatus.style.display = "inline-block";
@@ -1723,6 +1867,32 @@
 						allowfullscreen
 						referrerpolicy="strict-origin-when-cross-origin"
 					></iframe>
+
+					{# V75: Player HTML5 GRANDE DENTRO da area principal, no lugar do thumbnail/iframe
+					   (quando botao OUVIR AQUI retorna stream URL real).
+					   Antes: ficava MINUSCULO ABAIXO dos botoes, e o iframe "Video Indisponivel"
+					   continuava aparecendo no meio do painel (efeito horrivel). #}
+					<video id="yp-stream-player"
+						class="yp-stream-player-big"
+						controls
+						playsinline
+						preload="none">
+						Tu navegador no suporta player HTML5.
+					</video>
+
+					{# V75: Overlay AMARELO quando iframe embed retorna "Video Indisponivel".
+					   Mostra mensagem amigavel e indica para usar os 2 botoes abaixo. #}
+					<div id="yp-embed-blocked-overlay" style="display:none;">
+						<div class="yp-ebo-box">
+							<span class="icon" style="font-size: 1.35rem; color: #b95000;">⚠️</span>
+							<div class="yp-ebo-title">Este vídeo bloqueou o embed do YouTube</div>
+							<div class="yp-ebo-text">O criador do vídeo desativou reprodução em iframe ("Video Indisponível").<br />Use os 2 botões ABAIXO — eles NUNCA FALHAM:</div>
+							<ul class="yp-ebo-list">
+								<li>🔴 <strong>YOUTUBE (sempre funciona)</strong> → abre em nova aba oficial</li>
+								<li>🔵 <strong>OUVIR AQUI (stream)</strong> → toca direto aqui pelo yt-dlp</li>
+							</ul>
+						</div>
+					</div>
 				</div>
 				<div id="yp-actions" style="display:none;">
 					<a id="yp-link-youtube" href="#" target="_blank" rel="noopener noreferrer">Abrir no YouTube ↗</a>
@@ -1755,16 +1925,6 @@
 					<span id="yp-stream-status" class="tag is-small" style="display:none; margin-left: 4px; align-self: center; font-size: 0.65rem;"></span>
 				</div>
 
-				{# V67: PLAYER HTML5 NATIVO (para botao Stream URL /preview endpoint yt-dlp)
-				    Nao usa iframe YouTube, nunca da "Video indisponivel".
-				    Toca a URL stream real retornada pelo yt-dlp do backend. #}
-				<video id="yp-stream-player"
-					style="display:none; width: 100%; margin-top: 7px; border-radius: 7px; max-height: 180px; background: black;"
-					controls
-					playsinline
-					preload="none">
-					Tu navegador no suporta player HTML5.
-				</video>
 			</div> {# / #youtube-preview-panel #}
 </div> {# / .v73-preview-area (fim area preview abaixo de tudo) #}
 
