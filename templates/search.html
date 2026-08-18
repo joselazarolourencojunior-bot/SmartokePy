@@ -35,41 +35,57 @@
 	}
 	ul.search_result_items li {
 		display: flex;
-		flex-direction: column;
+		flex-direction: column;       /* Mobile: thumbnail ACIMA, texto/btn ABAIXO */
 		align-items: stretch;
 		gap: 0.75rem;
 		padding: 0.75rem;
-		/* V70: evita overflow de texto / sobreposicao em telas estreitas */
-		flex-wrap: wrap;
+		/* V71: NAO deixa mais vazar background azul. Card sempre preto/escuro PADRAO. */
+		background-color: rgb(40, 43, 43) !important;
+		border: 1px solid #3a3f3f;
+		border-radius: 8px;
+		margin-bottom: 0.35rem;
+		overflow: hidden;
+		flex-wrap: nowrap;             /* V71: REMOVI wrap de V70 (era o bug!) */
 	}
-	ul.search_result_items li:nth-child(odd) {
-		background-color: rgb(50, 55, 55);
+	ul.search_result_items li.yp-hovered,
+	ul.search_result_items li:hover {
+		/* V71: HOVER = borda CLARA (sem background azul pesado que "desenquadra") */
+		border-color: #3298dc !important;
+		box-shadow: 0 0 0 1px #3298dc88 inset,  0 4px 14px rgba(50,152,220,0.25);
+		background-color: rgb(45, 50, 52) !important;
 	}
 	@media screen and (min-width: 768px) {
 		ul.search_result_items li {
-			flex-direction: row;
-			align-items: flex-start;  /* V70: top align evita botao ficar centralizado vertical */
+			flex-direction: row;          /* Desktop: thumbnail ESQUERDA + texto/btn DIREITA (LADO A LADO!) */
+			align-items: stretch;         /* V71: stretch = thumbnail pega ALTURA CHEIA do card (nao fica menor!) */
 			gap: 1rem;
 		}
 	}
 
-	/* Thumbnail: full width on mobile, fixed 180px on desktop (reduzido V70 para caber na coluna esquerda) */
+	/* Thumbnail: full width mobile, 200px FIXO desktop. V71: thumbnail ALTURA SEMPRE IGUAL. */
 	#search-results .img-wrapper {
 		position: relative;
 		cursor: pointer;
 		width: 100%;
-		flex-shrink: 0;
+		flex: 0 0 auto;
+		flex-shrink: 0;                   /* NUNCA encolhe a thumbnail (causava desenquadre!) */
 	}
 	@media screen and (min-width: 768px) {
 		#search-results .img-wrapper {
-			width: 180px;  /* V70: reduziu de 200 -> 180px, ganhou espaco texto */
-			flex-shrink: 0;
+			width: 200px;                  /* V71: VOLTOU 200px (antes 180) */
+			min-width: 200px;
+			max-width: 200px;
+			flex: 0 0 200px;              /* TAMANHO FIXO, nao mexe. */
 		}
 	}
 	#search-results .img-frame {
 		position: relative;
 		overflow: hidden;
 		aspect-ratio: 16 / 9;
+		border-radius: 6px;               /* V71: borda arredondada, combina com o card */
+		background: black;
+		width: 100%;
+		height: 100%;
 	}
 	#search-results .img-wrapper img {
 		display: block;
@@ -79,12 +95,12 @@
 		transition: opacity 0.3s ease;
 	}
 
-	/* Meta: title fills space, button pinned right (V70: coluna, nunca sobrepoe texto!) */
+	/* V71: Meta (texto + btn) = COLUNA: titulo/canal ACIMA, botao ABAIXO (alinhado INFERIOR DIREITA) */
 	.search_result_items_meta {
 		display: flex;
-		flex-direction: column;  /* V70: MUDOU DE ROW -> COLUMN: texto + botao NA MESMA COLUNA */
-		align-items: flex-start;
-		justify-content: space-between;
+		flex-direction: column;
+		align-items: stretch;
+		justify-content: space-between;   /* V71: importante = botao cai NO PÉ da area meta (não no meio) */
 		gap: 0.5rem;
 		flex: 1 1 auto;
 		min-width: 0;
@@ -94,38 +110,36 @@
 		flex: 1 1 auto;
 		width: 100%;
 		min-width: 0;
-		overflow-wrap: anywhere;  /* V70: quebra linha em qualquer char se titulo gigante */
+		overflow-wrap: anywhere;
 		word-break: break-word;
 	}
 	.search_result_items_download {
 		flex: 0 0 auto;
-		align-self: flex-end;  /* V70: botao DOWNLOAD sempre ALINHADO DIREITA ABAIXO do titulo/canal. NUNCA SOBREPOE. */
+		align-self: flex-end;             /* V71: SEMPRE alinhado CANTO INFERIOR DIREITO do card */
 		width: 100%;
-		max-width: 240px;
+		max-width: 260px;
 		margin-top: 0.25rem;
 	}
 	@media screen and (min-width: 768px) {
 		.search_result_items_download {
-			width: auto;  /* desktop: botao largura natural */
-			min-width: 140px;
+			width: auto;
+			min-width: 160px;
 		}
 	}
 
-	/* V70: titulo do video nao fica 1 linha enorme (max 2 linhas + reticencias) */
+	/* V71: Titulo (max 3 linhas pq tem espaco agora ao lado da thumb) */
 	.search_result_items_meta > div:first-child > div:first-child {
 		font-size: 1rem !important;
-		line-height: 1.25;
+		line-height: 1.3;
 		font-weight: 600;
-		color: #f5f5f5;
+		color: #f7f7f7;
 		display: -webkit-box;
-		-webkit-line-clamp: 2;
+		-webkit-line-clamp: 3;   /* V71: 3 linhas (antes 2, desperdicava espaco) */
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		margin-bottom: 4px;
+		margin-bottom: 6px;
 	}
-
-	/* V70: corrigir os tamanhos do canal e link YouTube (is-size-7 mas sem sobrepor) */
 	.search_result_items_meta > div:first-child .is-size-7 {
 		font-size: 0.8rem !important;
 		line-height: 1.4;
@@ -262,7 +276,7 @@
 	@media (min-width: 1100px) {
 		.v69-grid-2col {
 			display: grid !important;
-			grid-template-columns: minmax(520px, 1.15fr) minmax(400px, 480px);  /* V70: min 520px na coluna esquerda cards */
+			grid-template-columns: minmax(540px, 1.2fr) minmax(400px, 480px);  /* V71: min 540px esquerdo (thumbnail 200 + texto 340) */
 			gap: 1.25rem;
 			align-items: start;
 		}
@@ -411,12 +425,13 @@
 		text-align: right;
 	}
 
-	/* highlight do item search result sob o mouse */
+	/* V71: highlight do item search result sob o mouse - SUBSTITUI o antigo (que fundo azul vazava).
+	   Aplicamos só sombra + borda suave (NAO mudamos background), assim NAO "desenquadra" o card. */
 	ul.search_result_items li.yp-hovered {
-		background-color: rgba(62, 142, 208, 0.18) !important;
-		outline: 2px solid #3e8ed0;
-		outline-offset: -2px;
-		border-radius: 6px;
+		border-color: #3e8ed0 !important;
+		box-shadow: 0 0 0 2px #3e8ed0aa inset, 0 6px 18px rgba(62,142,208,0.3);
+		transform: translateY(-1px);
+		transition: all 0.15s ease;
 	}
 	/* [V65]: highlight do item do autocomplete selectize */
 	.selectize-dropdown-content .option.yp-hovered,
