@@ -254,35 +254,176 @@
 	   V63: PREVIEW YOUTUBE GRANDE (Passa mouse mostra capa, clica play)
 	   ============================================================ */
 	#youtube-preview-panel {
-		width: 100%;
-		max-width: 400px;                 /* V73: DIMINUIR 480 -> 400px (compacto alinhado, nao sobrepoe) */
-		margin: 1.25rem auto 0 auto;       /* V73: SEMPRE ABAIXO, centralizado, margin-top 1.25rem */
+		width: 360px;                       /* V74: FIXO canto SUP DIR - max largura 360px compacto */
+		max-width: 360px;
+		margin: 0;                         /* V74: position fixed = margin auto NAO se aplica */
 		border: 1px solid #444;
 		border-radius: 10px;
 		background: linear-gradient(180deg, #1f2424 0%, #161a1a 100%);
-		padding: 0.75rem;
-		box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
-		opacity: 0.9;
-		transition: all 0.25s ease;
-		position: relative;
-		z-index: 500;
+		padding: 0.65rem;
+		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+		opacity: 0.96;
+		transition: opacity 0.18s ease;
+		/* ============================================================
+		   V74: POSICAO FIXA NO CANTO SUPERIOR DIREITO!
+		   RESOLVE AMBOS DEFEITOS:
+		   (1) Dropdown Selectize cai NO MEIO/ESQUERDA da coluna principal.
+		       Painel esta NA DIREITA, em local DIFERENTE -> ZERO CHANCE de
+		       sobreposicao um com o outro (ninguem sobrepoe ninguem!).
+		   (2) Preview SEMPRE VISIVEL, NAO IMPORTA se voce rola a pagina
+		       para BAIXO (ver resultados YouTube) ou para CIMA (busca).
+		       NUNCA MAIS precisa rolar a tela para encontrar a capa.
+		   ============================================================ */
+		position: fixed !important;
+		top: 80px;
+		right: 18px;
+		z-index: 900000;                  /* V74: menor que dropdown Selectize (999999), maior que tudo */
+	}
+	@media (max-width: 1099px) {
+		/* Tela menor (netbook, janela pequena): fallback centralizado ABAIXO,
+		   fixed right cobriria os resultados. */
+		#youtube-preview-panel {
+			position: relative !important;
+			top: auto;
+			right: auto;
+			width: 100%;
+			max-width: 380px;
+			margin: 1.25rem auto 0 auto !important;
+			z-index: 500;
+		}
 	}
 
 	/* ============================================================
-	   V73: REMOVIDO layout 2 COLUNAS do V69 (causava sobreposicao do
-	   dropdown Selectize com o painel sticky lateral direita).
-	   VOLTAMOS layout 1 COLUNA (como era V68 original):
-	   Preview YouTube SEMPRE ABAIXO de TUDO, centralizado, 400px.
-	   Desta forma, dropdown Selectize e search results NUNCA sao
-	   sobrepostos. Fallback global: 1 coluna normal para TELAS TODAS.
+	   V74: REMOVIDO layout 2 COLUNAS do V69 (era bagunca).
+	   VOLTAMOS layout 1 COLUNA global, preview FIXO canto sup dir.
 	   ============================================================ */
 	.v69-grid-2col { display: block !important; width: 100%; min-width: 0; }
 	.v69-col-left, .v69-col-right { display: block !important; width: 100%; min-width: 0; position: static !important; }
+	.v73-preview-area { width: 100%; display: block; clear: both; }
 
-	/* V73: z-index DROPDOWN Selectize SEMPRE o MAIOR de tudo!
-	   (garante que dropdown sobreponha QUALQUER coisa, inclusive preview) */
+	/* V74: z-index DROPDOWN Selectize SEMPRE o MAIOR de tudo! */
 	.selectize-dropdown { z-index: 999999 !important; }
 	.selectize-control { position: relative; z-index: 999998; }
+
+	/* V74: thumbnail MENOR do painel (360px largura max) */
+	#yp-main {
+		aspect-ratio: 16 / 9;
+		width: 100%;
+		max-height: 202px;                     /* 360 * 9/16 = 202.5 */
+		overflow: hidden;
+		border-radius: 8px;
+		background: black;
+		position: relative;
+		cursor: pointer;
+		display: none;
+	}
+	#youtube-preview-panel.active #yp-main { display: block; }
+	#yp-thumb {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+	#yp-iframe {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		border: 0;
+	}
+	/* V74: play overlay MENOR (202px altura max do thumbnail) */
+	#yp-main::before {
+		content: "";
+		position: absolute;
+		inset: 0;
+		background: radial-gradient(circle at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 68%);
+		opacity: 0;
+		transition: opacity 0.2s ease;
+		z-index: 2;
+	}
+	#yp-main:hover::before { opacity: 1; }
+	#yp-main::after {
+		content: "\e817";   /* icon-play (fontello) */
+		font-family: fontello;
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: 52px;
+		height: 52px;
+		border-radius: 50%;
+		background: rgba(0, 0, 0, 0.72);
+		color: #ff1744;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.3rem;
+		opacity: 0;
+		transition: opacity 0.2s ease;
+		z-index: 3;
+		pointer-events: none;
+	}
+	#yp-main:hover::after { opacity: 1; }
+
+	/* V74: Ajustes de TAMANHO MENOR no painel (cabem melhor em 360px) */
+	#yp-title {
+		font-weight: 700;
+		font-size: 0.78rem;
+		line-height: 1.25;
+		color: #e6e6e6;
+		margin: 0;
+		overflow: hidden;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+	}
+	#yp-duration {
+		background: #ff1744;
+		color: #fff;
+		font-size: 0.62rem;
+		font-weight: 700;
+		padding: 0.12rem 0.4rem;
+		border-radius: 4px;
+		white-space: nowrap;
+		margin-left: 0.4rem;
+	}
+	#yp-channel { font-size: 0.68rem; color: #aaa; margin: 0.15rem 0 0.45rem 0; }
+	#yp-actions { font-size: 0.7rem; margin-top: 0.35rem; color: #999; text-align: center; }
+	#yp-empty { text-align: center; color: #bdbdbd; padding: 0.45rem 0.3rem; font-size: 0.78rem; line-height: 1.45; }
+	#youtube-preview-panel.active #yp-empty { display: none; }
+
+	/* V74: BOTOES MENORES (cabem em 360px) */
+	#yp-buttons-row {
+		display: none;
+		width: 100%;
+		gap: 0.4rem;
+		margin-top: 0.55rem;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+	}
+	#youtube-preview-panel.active #yp-buttons-row { display: flex; }
+	#yp-buttons-row .button {
+		flex: 1 1 auto;
+		min-width: 140px;
+		font-size: 0.72rem;
+		padding: 0.5rem 0.7rem;
+		height: auto;
+		line-height: 1.2;
+		white-space: nowrap;
+	}
+	#yp-stream-status { font-size: 0.68rem; padding: 0.2rem 0.45rem; width: 100%; text-align: center; margin-top: 0.25rem; }
+	#yp-stream-player {
+		width: 100%;
+		margin-top: 0.5rem;
+		border-radius: 7px;
+		max-height: 150px;
+		background: black;
+		display: none;
+	}
+	#youtube-preview-panel.active + #yp-stream-player,
+	#yp-stream-player[src]:not([src=""]) { display: block; }
+	#youtube-preview-panel.active #yp-stream-player { display: block; }
 	#youtube-preview-panel.active {
 		opacity: 1;
 		border-color: #3e8ed0;
@@ -521,6 +662,13 @@
 			],
 			createOnBlur: true,
 			openOnFocus: false,
+			/* V74: openDirection = AUTO.
+			   Selectize detecta se tem ESPACO ABAIXO para abrir dropdown
+			   (se nao tiver, abre PARA CIMA automatico).
+			   Como painel preview YT agora esta FIXO canto SUP DIR,
+			   em local 100% DIFERENTE da coluna de busca -> ZERO chance de colisao,
+			   mas deixamos auto por seguranca. */
+			openDirection: "auto",
 			createFilter: function (input) {
 				return input.length >= 2;
 			},
@@ -535,6 +683,24 @@
 						that.ignoreFocusOpen = false;
 					}, 50);
 				});
+			},
+			/* V74: Quando dropdown do Selectize ABRE:
+			   Se a tela for LARGA >= 1100px (painel preview YT esta fixed na direita),
+			   nao faz nada -> ZERO sobreposicao (locais diferentes).
+			   Se tela for PEQUENA (<1100px, painel preview relative abaixo):
+			   reduz opacity do painel preview para 0.15 (quase invisivel) para
+			   garantir que dropdown nao seja obscurecido. */
+			onDropdownOpen: function ($dropdown) {
+				var w = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth;
+				if (w < 1100) {
+					var panel = document.getElementById("youtube-preview-panel");
+					if (panel) panel.style.setProperty("opacity", "0.12", "important");
+				}
+			},
+			/* V74: Quando dropdown FECHA: restaura opacity do painel. */
+			onDropdownClose: function ($dropdown) {
+				var panel = document.getElementById("youtube-preview-panel");
+				if (panel) panel.style.removeProperty("opacity");
 			},
 
 			onFocus: function () {
