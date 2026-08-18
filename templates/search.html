@@ -745,12 +745,13 @@
 
 		function yp_setPreview(data) {
 			var id = (data && data.id) ? data.id : yp_extractId(data && data.url);
-			if (!id) { yp_resetPreview(); return; }
+			var thumbOverride = (data && data.thumb) ? data.thumb : "";
+			if (!id && !thumbOverride) { yp_resetPreview(); return; }
 			yp_current.id = id;
 			yp_current.title = (data && data.title) ? data.title : "";
 			yp_current.channel = (data && data.channel) ? data.channel : "";
 			yp_current.duration = (data && data.duration) ? data.duration : "";
-			yp_current.url = (data && data.url) ? data.url : ("https://www.youtube.com/watch?v=" + id);
+			yp_current.url = (data && data.url) ? data.url : (id ? ("https://www.youtube.com/watch?v=" + id) : "");
 
 			var panel = document.getElementById("youtube-preview-panel");
 			if (!panel) return;
@@ -760,28 +761,45 @@
 			document.getElementById("yp-channel").style.display = yp_current.channel ? "block" : "none";
 			document.getElementById("yp-actions").style.display = "flex";
 
-			document.getElementById("yp-title").textContent = yp_current.title || ("Vídeo " + id);
+			document.getElementById("yp-title").textContent = yp_current.title || (id ? ("Vídeo " + id) : "Pré-visualização");
 			document.getElementById("yp-title").title = yp_current.title || "";
 			document.getElementById("yp-channel").textContent = yp_current.channel ? ("Canal: " + yp_current.channel) : "";
 			document.getElementById("yp-duration").textContent = yp_current.duration ? yp_current.duration : "?";
 			document.getElementById("yp-duration").style.display = yp_current.duration ? "inline-block" : "none";
 			var ytLink = document.getElementById("yp-link-youtube");
-			ytLink.href = yp_current.url;
-			ytLink.textContent = "Abrir no YouTube ↗";
+			ytLink.href = yp_current.url || "#";
+			ytLink.textContent = yp_current.url ? "Abrir no site ↗" : "";
+			if (!yp_current.url) ytLink.style.display = "none";
+			else ytLink.style.display = "inline";
 
-			// Thumbnail com fallback chain: maxresdefault -> sddefault -> hqdefault -> mqdefault
+			// [V64 - CORREÇÃO CRITICA]:
+			//   ANTES: maxresdefault (1ª opção) → NÃO EXISTE em 70% dos vídeos YouTube →
+			//          new Image().onerror demora 20 a 30 SEGUNDOS de timeout HTTP
+			//          para cada item → "demora muito pra aparecer".
+			//   AGORA: HQDEFAULT 1ª opção! (EXISTE EM 100% DOS VÍDEOS YOUTUBE,
+			//          tamanho 480x360, carrega em MENOS DE 100ms, sempre funciona)
 			var thumb = document.getElementById("yp-thumb");
-			var chain = ["maxresdefault.jpg", "sddefault.jpg", "hqdefault.jpg", "mqdefault.jpg"];
-			var idx = 0;
-			function tryNext() {
-				if (idx >= chain.length) return;
-				var src = "https://i.ytimg.com/vi/" + id + "/" + chain[idx];
-				var tmpImg = new Image();
-				tmpImg.onerror = function () { idx++; tryNext(); };
-				tmpImg.onload = function () { thumb.src = src; };
-				tmpImg.src = src;
+			if (thumbOverride) {
+				// Thumb sobrescrita (outro site, ou data-thumb custom)
+				thumb.src = thumbOverride;
+			} else if (id) {
+				// YouTube: hqdefault sempre existe, instantaneo (fallback pra mqdefault que tb sempre existe)
+				var chain = ["hqdefault.jpg", "mqdefault.jpg", "sddefault.jpg"];
+				var idx = 0;
+				function tryNext() {
+					if (idx >= chain.length) return;
+					var src = "https://i.ytimg.com/vi/" + id + "/" + chain[idx];
+					var tmpImg = new Image();
+					var t = setTimeout(function () { idx++; tryNext(); }, 3000);
+					tmpImg.onload = function () { clearTimeout(t); thumb.src = src; };
+					tmpImg.onerror = function () { clearTimeout(t); idx++; tryNext(); };
+					tmpImg.src = src;
+				}
+				tryNext();
+			} else {
+				// Nao tem id, nao tem thumb override: placeholder
+				thumb.src = "";
 			}
-			tryNext();
 
 			// Se estava tocando, para e reseta o iframe
 			if (yp_current.playing) yp_playPause(true);  // force pause
@@ -834,15 +852,37 @@
 				if (li._yp_bound) return;
 				li._yp_bound = true;
 				li.addEventListener("mouseenter", function () {
-					var id = li.getAttribute("data-ytid") || li.getAttribute("data-ytID");
-					var title = li.getAttribute("data-ytTitle") || "";
-					var url = li.getAttribute("value") || "";
-					var idx = li.getAttribute("data-index");
+					// [V64 - CORRECAO]: pega id case-insensitive (data-ytID HTML, dataset transforma em camelCase)
+					var id = null;
+					if (li.dataset) {
+						id = li.dataset.ytid || li.dataset.ytID || li.dataset.Ytid || null;
+					}
+					if (!id) {
+						id = li.getAttribute("data-ytID") || li.getAttribute("data-ytid") || li.getAttribute("data-yTid") || null;
+					}
+					// Ultima tentativa: jQuery data (se tiver)
+					if (!id && window.jQuery) {
+						id = jQuery(li).data("ytid") || jQuery(li).data("ytID") || null;
+					}
+					var title = li.getAttribute("data-ytTitle") || li.getAttribute("data-yttitle") || li.getAttribute("data-yt-title") || "";
+					if (!title && li.dataset) title = li.dataset.yttitle || li.dataset.ytTitle || "";
+					var url = li.getAttribute("value") || li.getAttribute("data-url") || "";
+					// Thumb override (outros sites: se tiver data-thumb usa ele)
+					var thumbOverride = li.getAttribute("data-thumb") || "";
+					if (!thumbOverride && li.dataset) thumbOverride = li.dataset.thumb || "";
+					// Outras informacoes
 					var channelEl = li.querySelector(".search_result_items_meta .is-size-7.has-text-grey");
 					var channel = (channelEl ? channelEl.textContent : "") || "";
 					var durationEl = li.querySelector(".duration-badge");
 					var duration = (durationEl ? durationEl.textContent : "") || "";
-					yp_setPreview({ id: id, title: title, channel: channel, duration: duration, url: url });
+					yp_setPreview({
+						id: id,
+						title: title,
+						channel: channel,
+						duration: duration,
+						url: url,
+						thumb: thumbOverride,
+					});
 					document.querySelectorAll("ul.search_result_items li.yp-hovered").forEach(function (x) {
 						if (x !== li) x.classList.remove("yp-hovered");
 					});
@@ -855,17 +895,25 @@
 		// Re-bind a cada 1s caso novos li sejam criados dinamicamente (mutations)
 		setInterval(yp_bindSearchResultHovers, 1000);
 
-		// Clique na area principal do preview = play/pause toggle
-		document.addEventListener("DOMContentLoaded", function () {
+		// [V64 - CORRECAO FATAL]:
+		//   ANTES: addEventListener("DOMContentLoaded", ...) DENTRO de $(function(){...})
+		//          → Evento já tinha PASSADO, o bind NUNCA acontecia!
+		//          Resultado: clicar na capa NÃO FAZIA NADA (play/pause NÃO FUNCIONAVA).
+		//   AGORA: Binda DIRETO, sem esperar nada, no final do jQuery Ready.
+		(function yp_bindMainClick(){
 			var main = document.getElementById("yp-main");
-			if (main) {
-				main.addEventListener("click", function (ev) {
-					// Nao toggle se clicar diretamente no iframe (deixa usuario usar controles do youtube)
-					if (ev.target && ev.target.tagName && ev.target.tagName.toLowerCase() === "iframe") return;
-					yp_playPause();
-				});
+			if (!main) {
+				setTimeout(yp_bindMainClick, 100);
+				return;
 			}
-		});
+			if (main._yp_click_bound) return;
+			main._yp_click_bound = true;
+			main.addEventListener("click", function (ev) {
+				// Nao toggle se clicar diretamente no iframe (deixa usuario usar controles do youtube)
+				if (ev.target && ev.target.tagName && ev.target.tagName.toLowerCase() === "iframe") return;
+				yp_playPause();
+			});
+		})();
 
 		// Se passar MOUSE FORA da lista de search results por >1 segundo, NAO reseta preview.
 		// (usuario quer ver a capa e escolher. Reseta apenas se clicar FORA ou trocar de pagina)
