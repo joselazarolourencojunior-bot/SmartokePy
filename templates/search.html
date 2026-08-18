@@ -201,7 +201,7 @@
 	#youtube-preview-panel {
 		width: 100%;
 		max-width: 480px;
-		margin: 0.6rem auto 0 auto;
+		margin: 0 auto 0 auto;
 		border: 1px solid #444;
 		border-radius: 10px;
 		background: linear-gradient(180deg, #1f2424 0%, #161a1a 100%);
@@ -209,7 +209,29 @@
 		box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
 		opacity: 0.9;
 		transition: all 0.25s ease;
+		/* [V69]: ZINDEX e POSICAO STICKY para ficar FIXO na lateral direita enquanto rola.
+		   Evita dropdown Selectize sobrepor (se sobrepor, z-index maior vence). */
+		position: relative;
+		z-index: 500;
 	}
+
+	/* ============================================================
+	   V69: LAYOUT 2 COLUNAS! Resolve 100% sobreposicao dropdown / preview.
+	   ============================================================ */
+	@media (min-width: 1100px) {
+		.v69-grid-2col {
+			display: grid !important;
+			grid-template-columns: minmax(0, 1.4fr) minmax(380px, 480px);
+			gap: 1.25rem;
+			align-items: start;
+		}
+		.v69-col-left  { grid-column: 1; min-width: 0; }
+		.v69-col-right { grid-column: 2; min-width: 0; position: sticky; top: 18px; z-index: 500; }
+		#youtube-preview-panel { max-width: 100%; margin: 0; }
+	}
+	/* [V69]: z-index do selectize DROPdown ABAIXO do preview, para nao cobrir quando tela for pequena / 1 coluna. */
+	.selectize-dropdown { z-index: 400 !important; }
+	.selectize-control { position: relative; z-index: 1; }
 	#youtube-preview-panel.active {
 		opacity: 1;
 		border-color: #3e8ed0;
@@ -1306,6 +1328,16 @@
 <h1>{% block title %}{% trans %}Search / Add New{% endtrans %}{% endblock %}</h1>
 {% endblock %} {% block content %}
 
+{# ============================================================
+   V69: LAYOUT 2 COLUNAS (Desktop >=1100px) — resolve 100% sobreposicao!
+   COLUNA ESQUERDA (.v69-col-left):  barra busca + Selectize dropdown + search results.
+   COLUNA DIREITA  (.v69-col-right): preview YouTube FIXO (position: sticky)
+     -> NUNCA MAIS dropdown cobre a capa! (lado a lado, sem overlap nenhum).
+   Mobile (<1100px): fallback automatico 1 coluna (como era antes).
+   ============================================================ #}
+<div class="v69-grid-2col">
+<div class="v69-col-left">
+
 <div>
 	<div class="field" id="container_queue_form">
 		<form id="queue-form">
@@ -1333,74 +1365,6 @@
 					<input type="checkbox" id="show-advanced" class="checkbox" name="show-advanced" />
 					{# MSG: Checkbox label which enables more options when searching. #} {% trans %}Advanced{% endtrans %}
 				</label>
-			</div>
-
-			{# ============================================================
-			   V63: PREVIEW YOUTUBE GRANDE (passe mouse = mostra capa / clique = play/pause)
-			   ============================================================ #}
-			<div id="youtube-preview-panel">
-				<div id="yp-empty">
-					👇 Passe o mouse sobre os resultados de busca abaixo para ver a CAPA DO YOUTUBE do vídeo aqui.
-					<br /><small>Clique na capa para TOCAR um trecho / vídeo completo (YouTube Embed) — clique de novo para PARAR.</small>
-				</div>
-				<div id="yp-header" style="display:none;">
-					<div id="yp-title">—</div>
-					<div id="yp-duration">—</div>
-				</div>
-				<div id="yp-channel" style="display:none;">—</div>
-				<div id="yp-main">
-					<img id="yp-thumb" alt="Capa do YouTube" src="" />
-					<iframe
-						id="yp-iframe"
-						src="about:blank"
-						title="YouTube video player"
-						frameborder="0"
-						allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-						allowfullscreen
-						referrerpolicy="strict-origin-when-cross-origin"
-					></iframe>
-				</div>
-				<div id="yp-actions" style="display:none;">
-					<a id="yp-link-youtube" href="#" target="_blank" rel="noopener noreferrer">Abrir no YouTube ↗</a>
-					<div id="yp-hint">Passe o mouse sobre os itens da lista → Atualiza a capa. Clique na capa → Play/Pause.</div>
-				</div>
-
-				{# ============================================================
-				   V67: BOTOES QUE NUNCA FALHAM (solve "Video indisponivel" embed)
-				   Muitos videos karaoke tem "embedding disabled" pelo dono,
-				   entao o iframe youtube.com/embed/ retorna "Vídeo indisponível".
-				   Esses 2 botoes CONTORNAM o bloqueio, sempre funcionam:
-				     (1) Botao "Abrir YouTube" = abre link direto em NOVA ABA (como voce ja faz manualmente)
-				     (2) Botao "Ouvir Aqui" = chama endpoint /preview do backend que usa yt-dlp
-				         para pegar a URL STREAM DIRETO do video, e toca no PLAYER HTML5 NATIVO
-				         (sem iframe, sem YouTube, 100% de chance de tocar)
-				   ============================================================ #}
-				<div id="yp-buttons-row">
-					<button type="button" id="yp-btn-open-yt"
-						class="button is-danger is-small"
-						style="background: linear-gradient(180deg, #ff3636 0%, #cc1616 100%); color: white; border: 0; box-shadow: 0 3px 10px rgba(255, 0, 0, 0.22); font-size: 0.75rem;">
-						<span class="icon" style="margin-right: 4px;"><i class="icon icon-youtube-play" style="font-size: 0.95rem;"></i></span>
-						<span>▶️ YOUTUBE (sempre funciona)</span>
-					</button>
-					<button type="button" id="yp-btn-stream"
-						class="button is-info is-small"
-						style="background: linear-gradient(180deg, #3e8ed0 0%, #2a6db0 100%); color: white; border: 0; box-shadow: 0 3px 10px rgba(62, 142, 208, 0.22); font-size: 0.75rem;">
-						<span class="icon" style="margin-right: 4px;"><i class="icon icon-volume-up" style="font-size: 0.95rem;"></i></span>
-						<span>🎧 OUVIR AQUI (stream)</span>
-					</button>
-					<span id="yp-stream-status" class="tag is-small" style="display:none; margin-left: 4px; align-self: center; font-size: 0.65rem;"></span>
-				</div>
-
-				{# V67: PLAYER HTML5 NATIVO (para botao Stream URL /preview endpoint yt-dlp)
-				    Nao usa iframe YouTube, nunca da "Video indisponivel".
-				    Toca a URL stream real retornada pelo yt-dlp do backend. #}
-				<video id="yp-stream-player"
-					style="display:none; width: 100%; margin-top: 7px; border-radius: 7px; max-height: 180px; background: black;"
-					controls
-					playsinline
-					preload="none">
-					Tu navegador no suporta player HTML5.
-				</video>
 			</div>
 		</form>
 	</div>
@@ -1508,4 +1472,80 @@
 		</div>
 	</div>
 </div>
-{% else %} {% endif %} {% endblock %}
+{% else %} {% endif %}
+
+</div> {# / .v69-col-left (fim coluna esquerda) #}
+
+{# ============================================================
+   V69: COLUNA DIREITA STICKY — preview YouTube FIXO do lado da lista.
+   NUNCA MAIS o dropdown do Selectize sobrepoe a capa!
+   ============================================================ #}
+<div class="v69-col-right">
+	<div id="youtube-preview-panel">
+				<div id="yp-empty">
+					👇 Passe o mouse sobre os resultados de busca abaixo para ver a CAPA DO YOUTUBE do vídeo aqui.
+					<br /><small>Clique na capa para TOCAR um trecho / vídeo completo (YouTube Embed) — clique de novo para PARAR.</small>
+				</div>
+				<div id="yp-header" style="display:none;">
+					<div id="yp-title">—</div>
+					<div id="yp-duration">—</div>
+				</div>
+				<div id="yp-channel" style="display:none;">—</div>
+				<div id="yp-main">
+					<img id="yp-thumb" alt="Capa do YouTube" src="" />
+					<iframe
+						id="yp-iframe"
+						src="about:blank"
+						title="YouTube video player"
+						frameborder="0"
+						allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+						allowfullscreen
+						referrerpolicy="strict-origin-when-cross-origin"
+					></iframe>
+				</div>
+				<div id="yp-actions" style="display:none;">
+					<a id="yp-link-youtube" href="#" target="_blank" rel="noopener noreferrer">Abrir no YouTube ↗</a>
+					<div id="yp-hint">Passe o mouse sobre os itens da lista → Atualiza a capa. Clique na capa → Play/Pause.</div>
+				</div>
+
+				{# ============================================================
+				   V67: BOTOES QUE NUNCA FALHAM (solve "Video indisponivel" embed)
+				   Muitos videos karaoke tem "embedding disabled" pelo dono,
+				   entao o iframe youtube.com/embed/ retorna "Vídeo indisponível".
+				   Esses 2 botoes CONTORNAM o bloqueio, sempre funcionam:
+				     (1) Botao "Abrir YouTube" = abre link direto em NOVA ABA (como voce ja faz manualmente)
+				     (2) Botao "Ouvir Aqui" = chama endpoint /preview do backend que usa yt-dlp
+				         para pegar a URL STREAM DIRETO do video, e toca no PLAYER HTML5 NATIVO
+				         (sem iframe, sem YouTube, 100% de chance de tocar)
+				   ============================================================ #}
+				<div id="yp-buttons-row">
+					<button type="button" id="yp-btn-open-yt"
+						class="button is-danger is-small"
+						style="background: linear-gradient(180deg, #ff3636 0%, #cc1616 100%); color: white; border: 0; box-shadow: 0 3px 10px rgba(255, 0, 0, 0.22); font-size: 0.75rem;">
+						<span class="icon" style="margin-right: 4px;"><i class="icon icon-youtube-play" style="font-size: 0.95rem;"></i></span>
+						<span>▶️ YOUTUBE (sempre funciona)</span>
+					</button>
+					<button type="button" id="yp-btn-stream"
+						class="button is-info is-small"
+						style="background: linear-gradient(180deg, #3e8ed0 0%, #2a6db0 100%); color: white; border: 0; box-shadow: 0 3px 10px rgba(62, 142, 208, 0.22); font-size: 0.75rem;">
+						<span class="icon" style="margin-right: 4px;"><i class="icon icon-volume-up" style="font-size: 0.95rem;"></i></span>
+						<span>🎧 OUVIR AQUI (stream)</span>
+					</button>
+					<span id="yp-stream-status" class="tag is-small" style="display:none; margin-left: 4px; align-self: center; font-size: 0.65rem;"></span>
+				</div>
+
+				{# V67: PLAYER HTML5 NATIVO (para botao Stream URL /preview endpoint yt-dlp)
+				    Nao usa iframe YouTube, nunca da "Video indisponivel".
+				    Toca a URL stream real retornada pelo yt-dlp do backend. #}
+				<video id="yp-stream-player"
+					style="display:none; width: 100%; margin-top: 7px; border-radius: 7px; max-height: 180px; background: black;"
+					controls
+					playsinline
+					preload="none">
+					Tu navegador no suporta player HTML5.
+				</video>
+			</div> {# / #youtube-preview-panel #}
+</div> {# / .v69-col-right (fim coluna direita) #}
+</div> {# / .v69-grid-2col (fim layout 2 colunas) #}
+
+{% endblock %}
