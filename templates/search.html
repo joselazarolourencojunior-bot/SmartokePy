@@ -200,31 +200,31 @@
 	   ============================================================ */
 	#youtube-preview-panel {
 		width: 100%;
-		max-width: 960px;
-		margin: 1.5rem auto 0 auto;
+		max-width: 480px;
+		margin: 0.6rem auto 0 auto;
 		border: 1px solid #444;
-		border-radius: 12px;
+		border-radius: 10px;
 		background: linear-gradient(180deg, #1f2424 0%, #161a1a 100%);
-		padding: 1.25rem;
-		box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-		opacity: 0.85;
+		padding: 0.75rem;
+		box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+		opacity: 0.9;
 		transition: all 0.25s ease;
 	}
 	#youtube-preview-panel.active {
 		opacity: 1;
 		border-color: #3e8ed0;
-		box-shadow: 0 10px 50px rgba(62, 142, 208, 0.3);
+		box-shadow: 0 6px 28px rgba(62, 142, 208, 0.3);
 	}
 	#yp-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		margin-bottom: 12px;
-		gap: 12px;
+		margin-bottom: 6px;
+		gap: 8px;
 	}
 	#yp-title {
 		flex: 1;
-		font-size: 1.15rem;
+		font-size: 0.8rem;
 		font-weight: 600;
 		color: #fff;
 		overflow: hidden;
@@ -235,22 +235,22 @@
 		flex-shrink: 0;
 		background: rgba(255, 72, 72, 0.95);
 		color: white;
-		font-size: 0.85rem;
-		padding: 4px 10px;
-		border-radius: 6px;
+		font-size: 0.65rem;
+		padding: 2px 7px;
+		border-radius: 5px;
 		font-weight: 600;
 	}
 	#yp-channel {
 		color: #9db0b0;
-		font-size: 0.9rem;
-		margin-bottom: 12px;
+		font-size: 0.7rem;
+		margin-bottom: 6px;
 	}
 	#yp-main {
 		position: relative;
 		width: 100%;
 		aspect-ratio: 16 / 9;
-		max-height: 540px;
-		border-radius: 10px;
+		max-height: 270px;
+		border-radius: 7px;
 		overflow: hidden;
 		background: #000;
 		cursor: pointer;
@@ -288,14 +288,14 @@
 		position: absolute;
 		top: 50%; left: 50%;
 		transform: translate(-50%, -50%);
-		width: 110px; height: 110px;
+		width: 55px; height: 55px;
 		background: rgba(0, 0, 0, 0.72);
 		border-radius: 50%;
 		opacity: 0.85;
 		transition: all 0.2s ease;
 		pointer-events: none;
 		z-index: 2;
-		box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
 	}
 	#yp-main::after {
 		font-family: "fontello";
@@ -303,11 +303,11 @@
 		position: absolute;
 		top: 50%; left: 51%;
 		transform: translate(-50%, -50%);
-		font-size: 2.75rem;
+		font-size: 1.4rem;
 		color: white;
 		opacity: 1;
 		transition: all 0.2s ease;
-		text-shadow: 0 0 10px rgba(0, 0, 0, 0.9);
+		text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
 		pointer-events: none;
 		z-index: 3;
 	}
@@ -326,24 +326,24 @@
 		color: #8a9d9d;
 		font-style: italic;
 		text-align: center;
-		padding: 2rem 0;
-		font-size: 0.95rem;
+		padding: 0.7rem 0;
+		font-size: 0.72rem;
 	}
 	#yp-actions {
-		margin-top: 10px;
+		margin-top: 5px;
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		gap: 12px;
+		gap: 6px;
 	}
 	#yp-link-youtube {
 		color: #3e8ed0;
-		font-size: 0.9rem;
+		font-size: 0.72rem;
 		text-decoration: underline;
 	}
 	#yp-hint {
 		color: #7d8d8d;
-		font-size: 0.85rem;
+		font-size: 0.68rem;
 		flex: 1;
 		text-align: right;
 	}
@@ -364,8 +364,8 @@
 	/* V67: area dos 2 botoes do preview (ABRIR YOUTUBE + OUVIR AQUI) */
 	#yp-buttons-row {
 		display: none;
-		margin-top: 14px;
-		gap: 10px;
+		margin-top: 8px;
+		gap: 6px;
 		flex-wrap: wrap;
 		align-items: center;
 	}
@@ -1335,29 +1335,6 @@
 				</label>
 			</div>
 
-			<article class="message">
-				<div class="message-body">
-					<div class="columns is-vcentered is-mobile">
-						<div class="column is-narrow">
-							<span class="icon has-text-warning">
-								{# MSG: Info icon at the start of the help text below the search bar. #}
-								<i class="icon icon-info-circled-1 is-size-4" title="Info"></i>
-							</span>
-						</div>
-						<div class="column has-text-warning-light">
-							<p class="mb-1 is-italic">
-								{# MSG: Help text below the search bar. #} {% trans -%}- Type a song (title/artist) to search
-								the available songs and click 'Add to queue' to add it to the queue. {%- endtrans %}
-							</p>
-							<p class="is-italic">
-								{# MSG: Additonal help text below the search bar. #} {% trans -%}- If the song doesn't appear in
-								the "Available Songs" dropdown, click 'Search' to find it on Youtube {%- endtrans %}
-							</p>
-						</div>
-					</div>
-				</div>
-			</article>
-
 			{# ============================================================
 			   V63: PREVIEW YOUTUBE GRANDE (passe mouse = mostra capa / clique = play/pause)
 			   ============================================================ #}
@@ -1400,25 +1377,25 @@
 				   ============================================================ #}
 				<div id="yp-buttons-row">
 					<button type="button" id="yp-btn-open-yt"
-						class="button is-danger is-medium"
-						style="background: linear-gradient(180deg, #ff3636 0%, #cc1616 100%); color: white; border: 0; box-shadow: 0 4px 15px rgba(255, 0, 0, 0.25);">
-						<span class="icon" style="margin-right: 6px;"><i class="icon icon-youtube-play" style="font-size: 1.15rem;"></i></span>
-						<span>▶️ ABRIR NO YOUTUBE (sempre funciona)</span>
+						class="button is-danger is-small"
+						style="background: linear-gradient(180deg, #ff3636 0%, #cc1616 100%); color: white; border: 0; box-shadow: 0 3px 10px rgba(255, 0, 0, 0.22); font-size: 0.75rem;">
+						<span class="icon" style="margin-right: 4px;"><i class="icon icon-youtube-play" style="font-size: 0.95rem;"></i></span>
+						<span>▶️ YOUTUBE (sempre funciona)</span>
 					</button>
 					<button type="button" id="yp-btn-stream"
-						class="button is-info is-medium"
-						style="background: linear-gradient(180deg, #3e8ed0 0%, #2a6db0 100%); color: white; border: 0; box-shadow: 0 4px 15px rgba(62, 142, 208, 0.25);">
-						<span class="icon" style="margin-right: 6px;"><i class="icon icon-volume-up" style="font-size: 1.15rem;"></i></span>
-						<span>🎧 OUVIR AQUI (Stream URL do yt-dlp)</span>
+						class="button is-info is-small"
+						style="background: linear-gradient(180deg, #3e8ed0 0%, #2a6db0 100%); color: white; border: 0; box-shadow: 0 3px 10px rgba(62, 142, 208, 0.22); font-size: 0.75rem;">
+						<span class="icon" style="margin-right: 4px;"><i class="icon icon-volume-up" style="font-size: 0.95rem;"></i></span>
+						<span>🎧 OUVIR AQUI (stream)</span>
 					</button>
-					<span id="yp-stream-status" class="tag" style="display:none; margin-left: 6px; align-self: center;"></span>
+					<span id="yp-stream-status" class="tag is-small" style="display:none; margin-left: 4px; align-self: center; font-size: 0.65rem;"></span>
 				</div>
 
 				{# V67: PLAYER HTML5 NATIVO (para botao Stream URL /preview endpoint yt-dlp)
 				    Nao usa iframe YouTube, nunca da "Video indisponivel".
 				    Toca a URL stream real retornada pelo yt-dlp do backend. #}
 				<video id="yp-stream-player"
-					style="display:none; width: 100%; margin-top: 12px; border-radius: 10px; max-height: 320px; background: black;"
+					style="display:none; width: 100%; margin-top: 7px; border-radius: 7px; max-height: 180px; background: black;"
 					controls
 					playsinline
 					preload="none">
