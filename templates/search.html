@@ -194,6 +194,159 @@
 		from { transform: rotate(0deg); }
 		to { transform: rotate(360deg); }
 	}
+
+	/* ============================================================
+	   V63: PREVIEW YOUTUBE GRANDE (Passa mouse mostra capa, clica play)
+	   ============================================================ */
+	#youtube-preview-panel {
+		width: 100%;
+		max-width: 960px;
+		margin: 1.5rem auto 0 auto;
+		border: 1px solid #444;
+		border-radius: 12px;
+		background: linear-gradient(180deg, #1f2424 0%, #161a1a 100%);
+		padding: 1.25rem;
+		box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+		opacity: 0.85;
+		transition: all 0.25s ease;
+	}
+	#youtube-preview-panel.active {
+		opacity: 1;
+		border-color: #3e8ed0;
+		box-shadow: 0 10px 50px rgba(62, 142, 208, 0.3);
+	}
+	#yp-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 12px;
+		gap: 12px;
+	}
+	#yp-title {
+		flex: 1;
+		font-size: 1.15rem;
+		font-weight: 600;
+		color: #fff;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	#yp-duration {
+		flex-shrink: 0;
+		background: rgba(255, 72, 72, 0.95);
+		color: white;
+		font-size: 0.85rem;
+		padding: 4px 10px;
+		border-radius: 6px;
+		font-weight: 600;
+	}
+	#yp-channel {
+		color: #9db0b0;
+		font-size: 0.9rem;
+		margin-bottom: 12px;
+	}
+	#yp-main {
+		position: relative;
+		width: 100%;
+		aspect-ratio: 16 / 9;
+		max-height: 540px;
+		border-radius: 10px;
+		overflow: hidden;
+		background: #000;
+		cursor: pointer;
+	}
+	#yp-thumb {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+		transition: opacity 0.2s ease;
+	}
+	#yp-main iframe {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		border: 0;
+		display: none;
+		background: #000;
+	}
+	#yp-main.playing #yp-thumb { display: none; }
+	#yp-main.playing iframe { display: block; }
+
+	/* Circulo + icone play overlay (igual youtube, VISIVEL em thumbnail) */
+	#yp-main::before {
+		content: "";
+		position: absolute;
+		top: 50%; left: 50%;
+		transform: translate(-50%, -50%);
+		width: 110px; height: 110px;
+		background: rgba(0, 0, 0, 0.72);
+		border-radius: 50%;
+		opacity: 0.85;
+		transition: all 0.2s ease;
+		pointer-events: none;
+		z-index: 2;
+		box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+	}
+	#yp-main::after {
+		font-family: "fontello";
+		content: "\e800";  /* play icon */
+		position: absolute;
+		top: 50%; left: 51%;
+		transform: translate(-50%, -50%);
+		font-size: 2.75rem;
+		color: white;
+		opacity: 1;
+		transition: all 0.2s ease;
+		text-shadow: 0 0 10px rgba(0, 0, 0, 0.9);
+		pointer-events: none;
+		z-index: 3;
+	}
+	#yp-main:hover::before {
+		opacity: 1;
+		transform: translate(-50%, -50%) scale(1.08);
+		background: rgba(255, 0, 0, 0.85);
+	}
+	#yp-main:hover::after {
+		transform: translate(-50%, -50%) scale(1.1);
+	}
+	#yp-main.playing::before, #yp-main.playing::after {
+		display: none;  /* esconde o play overlay enquanto o iframe toca */
+	}
+	#yp-empty {
+		color: #8a9d9d;
+		font-style: italic;
+		text-align: center;
+		padding: 2rem 0;
+		font-size: 0.95rem;
+	}
+	#yp-actions {
+		margin-top: 10px;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+	}
+	#yp-link-youtube {
+		color: #3e8ed0;
+		font-size: 0.9rem;
+		text-decoration: underline;
+	}
+	#yp-hint {
+		color: #7d8d8d;
+		font-size: 0.85rem;
+		flex: 1;
+		text-align: right;
+	}
+
+	/* highlight do item search result sob o mouse */
+	ul.search_result_items li.yp-hovered {
+		background-color: rgba(62, 142, 208, 0.18) !important;
+		outline: 2px solid #3e8ed0;
+		outline-offset: -2px;
+		border-radius: 6px;
+	}
 </style>
 <script>
 	$(function () {
@@ -574,6 +727,159 @@
 			})
 		);
 
+		// ============================================================
+		// V63: PREVIEW YOUTUBE GRANDE (Passa mouse mostra capa, clica play)
+		// ============================================================
+		function yp_extractId(urlOrId) {
+			if (!urlOrId) return null;
+			if (typeof urlOrId !== "string") urlOrId = String(urlOrId);
+			// Se ja tem 11 chars (id youtube direto)
+			if (/^[a-zA-Z0-9_-]{11}$/.test(urlOrId)) return urlOrId;
+			// Tenta extrair de URL
+			var m = urlOrId.match(/(?:youtube\.com\/(?:[^/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+			if (m && m[1]) return m[1];
+			return null;
+		}
+
+		var yp_current = { id: null, title: "", channel: "", duration: "", url: "", playing: false };
+
+		function yp_setPreview(data) {
+			var id = (data && data.id) ? data.id : yp_extractId(data && data.url);
+			if (!id) { yp_resetPreview(); return; }
+			yp_current.id = id;
+			yp_current.title = (data && data.title) ? data.title : "";
+			yp_current.channel = (data && data.channel) ? data.channel : "";
+			yp_current.duration = (data && data.duration) ? data.duration : "";
+			yp_current.url = (data && data.url) ? data.url : ("https://www.youtube.com/watch?v=" + id);
+
+			var panel = document.getElementById("youtube-preview-panel");
+			if (!panel) return;
+			panel.classList.add("active");
+			document.getElementById("yp-empty").style.display = "none";
+			document.getElementById("yp-header").style.display = "flex";
+			document.getElementById("yp-channel").style.display = yp_current.channel ? "block" : "none";
+			document.getElementById("yp-actions").style.display = "flex";
+
+			document.getElementById("yp-title").textContent = yp_current.title || ("Vídeo " + id);
+			document.getElementById("yp-title").title = yp_current.title || "";
+			document.getElementById("yp-channel").textContent = yp_current.channel ? ("Canal: " + yp_current.channel) : "";
+			document.getElementById("yp-duration").textContent = yp_current.duration ? yp_current.duration : "?";
+			document.getElementById("yp-duration").style.display = yp_current.duration ? "inline-block" : "none";
+			var ytLink = document.getElementById("yp-link-youtube");
+			ytLink.href = yp_current.url;
+			ytLink.textContent = "Abrir no YouTube ↗";
+
+			// Thumbnail com fallback chain: maxresdefault -> sddefault -> hqdefault -> mqdefault
+			var thumb = document.getElementById("yp-thumb");
+			var chain = ["maxresdefault.jpg", "sddefault.jpg", "hqdefault.jpg", "mqdefault.jpg"];
+			var idx = 0;
+			function tryNext() {
+				if (idx >= chain.length) return;
+				var src = "https://i.ytimg.com/vi/" + id + "/" + chain[idx];
+				var tmpImg = new Image();
+				tmpImg.onerror = function () { idx++; tryNext(); };
+				tmpImg.onload = function () { thumb.src = src; };
+				tmpImg.src = src;
+			}
+			tryNext();
+
+			// Se estava tocando, para e reseta o iframe
+			if (yp_current.playing) yp_playPause(true);  // force pause
+		}
+
+		function yp_resetPreview() {
+			yp_current = { id: null, title: "", channel: "", duration: "", url: "", playing: false };
+			var panel = document.getElementById("youtube-preview-panel");
+			if (!panel) return;
+			panel.classList.remove("active");
+			document.getElementById("yp-empty").style.display = "block";
+			document.getElementById("yp-header").style.display = "none";
+			document.getElementById("yp-channel").style.display = "none";
+			document.getElementById("yp-actions").style.display = "none";
+			var main = document.getElementById("yp-main");
+			main.classList.remove("playing");
+			var iframe = main.querySelector("iframe");
+			if (iframe) iframe.src = "about:blank";
+			document.getElementById("yp-thumb").src = "";
+			// Remove highlight
+			document.querySelectorAll("ul.search_result_items li.yp-hovered").forEach(function (li) {
+				li.classList.remove("yp-hovered");
+			});
+		}
+
+		function yp_playPause(forcePause) {
+			var main = document.getElementById("yp-main");
+			var iframe = main.querySelector("iframe");
+			if (!yp_current.id) return;
+			if (forcePause === true || yp_current.playing) {
+				// Pausar: tira o playing (mostra thumb de novo) e reseta src do iframe
+				yp_current.playing = false;
+				main.classList.remove("playing");
+				iframe.src = "about:blank";
+			} else {
+				// Play: carrega iframe YouTube embed com autoplay
+				yp_current.playing = true;
+				main.classList.add("playing");
+				iframe.src = "https://www.youtube.com/embed/" + yp_current.id
+					+ "?autoplay=1&rel=0&controls=1&modestbranding=1&playsinline=1"
+					+ "&origin=" + encodeURIComponent(window.location.origin);
+			}
+		}
+
+		// Bind HOVER + CLICK nos resultados (search_result_items li)
+		function yp_bindSearchResultHovers() {
+			var lis = document.querySelectorAll("ul.search_result_items li");
+			lis.forEach(function (li) {
+				// Evita bind duplicado
+				if (li._yp_bound) return;
+				li._yp_bound = true;
+				li.addEventListener("mouseenter", function () {
+					var id = li.getAttribute("data-ytid") || li.getAttribute("data-ytID");
+					var title = li.getAttribute("data-ytTitle") || "";
+					var url = li.getAttribute("value") || "";
+					var idx = li.getAttribute("data-index");
+					var channelEl = li.querySelector(".search_result_items_meta .is-size-7.has-text-grey");
+					var channel = (channelEl ? channelEl.textContent : "") || "";
+					var durationEl = li.querySelector(".duration-badge");
+					var duration = (durationEl ? durationEl.textContent : "") || "";
+					yp_setPreview({ id: id, title: title, channel: channel, duration: duration, url: url });
+					document.querySelectorAll("ul.search_result_items li.yp-hovered").forEach(function (x) {
+						if (x !== li) x.classList.remove("yp-hovered");
+					});
+					li.classList.add("yp-hovered");
+				});
+			});
+		}
+		// Bind inicial (pagina carrega com resultados, caso tenha search_results)
+		if (document.querySelector("ul.search_result_items li")) yp_bindSearchResultHovers();
+		// Re-bind a cada 1s caso novos li sejam criados dinamicamente (mutations)
+		setInterval(yp_bindSearchResultHovers, 1000);
+
+		// Clique na area principal do preview = play/pause toggle
+		document.addEventListener("DOMContentLoaded", function () {
+			var main = document.getElementById("yp-main");
+			if (main) {
+				main.addEventListener("click", function (ev) {
+					// Nao toggle se clicar diretamente no iframe (deixa usuario usar controles do youtube)
+					if (ev.target && ev.target.tagName && ev.target.tagName.toLowerCase() === "iframe") return;
+					yp_playPause();
+				});
+			}
+		});
+
+		// Se passar MOUSE FORA da lista de search results por >1 segundo, NAO reseta preview.
+		// (usuario quer ver a capa e escolher. Reseta apenas se clicar FORA ou trocar de pagina)
+		// O que fazemos: se o usuario clicar FORA de search results e fora do preview, reseta.
+		$(document).on("click", function (ev) {
+			var $t = $(ev.target);
+			if ($t.closest("#youtube-preview-panel").length) return;
+			if ($t.closest("ul.search_result_items").length) return;
+			if ($t.closest("#container_search_form").length) return;
+			if ($t.closest("form").length) return;
+			// Nao reseta para não atrapalhar. Comentado propositalmente.
+			// yp_resetPreview();
+		});
+
 
 
 		$("#search-results").on("click", ".img-wrapper", function () {
@@ -714,6 +1020,37 @@
 					</div>
 				</div>
 			</article>
+
+			{# ============================================================
+			   V63: PREVIEW YOUTUBE GRANDE (passe mouse = mostra capa / clique = play/pause)
+			   ============================================================ #}
+			<div id="youtube-preview-panel">
+				<div id="yp-empty">
+					👇 Passe o mouse sobre os resultados de busca abaixo para ver a CAPA DO YOUTUBE do vídeo aqui.
+					<br /><small>Clique na capa para TOCAR um trecho / vídeo completo (YouTube Embed) — clique de novo para PARAR.</small>
+				</div>
+				<div id="yp-header" style="display:none;">
+					<div id="yp-title">—</div>
+					<div id="yp-duration">—</div>
+				</div>
+				<div id="yp-channel" style="display:none;">—</div>
+				<div id="yp-main">
+					<img id="yp-thumb" alt="Capa do YouTube" src="" />
+					<iframe
+						id="yp-iframe"
+						src="about:blank"
+						title="YouTube video player"
+						frameborder="0"
+						allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+						allowfullscreen
+						referrerpolicy="strict-origin-when-cross-origin"
+					></iframe>
+				</div>
+				<div id="yp-actions" style="display:none;">
+					<a id="yp-link-youtube" href="#" target="_blank" rel="noopener noreferrer">Abrir no YouTube ↗</a>
+					<div id="yp-hint">Passe o mouse sobre os itens da lista → Atualiza a capa. Clique na capa → Play/Pause.</div>
+				</div>
+			</div>
 		</form>
 	</div>
 
