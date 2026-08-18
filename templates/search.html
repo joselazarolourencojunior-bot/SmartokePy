@@ -273,16 +273,31 @@
 	/* ============================================================
 	   V69: LAYOUT 2 COLUNAS! Resolve 100% sobreposicao dropdown / preview.
 	   ============================================================ */
-	@media (min-width: 1100px) {
+	@media (min-width: 1000px) {  /* V72: antes min 1100, agora 1000 (atualiza + telas desktop) */
 		.v69-grid-2col {
 			display: grid !important;
 			grid-template-columns: minmax(540px, 1.2fr) minmax(400px, 480px);  /* V71: min 540px esquerdo (thumbnail 200 + texto 340) */
 			gap: 1.25rem;
 			align-items: start;
+			width: 100%;
+			min-width: 0;
+			max-width: 1400px;
+			margin: 0 auto;
 		}
-		.v69-col-left  { grid-column: 1; min-width: 0; }
-		.v69-col-right { grid-column: 2; min-width: 0; position: sticky; top: 18px; z-index: 500; }
-		#youtube-preview-panel { max-width: 100%; margin: 0; }
+		.v69-col-left  { grid-column: 1; min-width: 0; width: 100%; }
+		.v69-col-right { grid-column: 2; min-width: 0; width: 100%; position: sticky; top: 18px; z-index: 500; }
+		#youtube-preview-panel { max-width: 100%; width: 100%; margin: 0; }
+	}
+	/* V72: fallback SE a media query 2 colunas NAO ativar (telas estreitas):
+	   Painel preview OCUPA 100% width centralizado max 480px (como era V68 antigo).
+	   IMPORTANTE: evita o bug do preview ficar "pequeno / flutuando no canto esquerdo". */
+	.v69-grid-2col {
+		display: block;   /* fallback = 1 coluna normal */
+		width: 100%;
+		min-width: 0;
+	}
+	@media (max-width: 999px) {
+		#youtube-preview-panel { max-width: 480px; margin: 1rem auto !important; }
 	}
 	/* [V69]: z-index do selectize DROPdown ABAIXO do preview, para nao cobrir quando tela for pequena / 1 coluna. */
 	.selectize-dropdown { z-index: 400 !important; }
@@ -1527,7 +1542,6 @@
 			<button class="modal-close is-large" aria-label="close"></button>
 		</div>
 	</div>
-</div>
 {% else %} {% endif %}
 
 </div> {# / .v69-col-left (fim coluna esquerda) #}
