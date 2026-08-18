@@ -64,16 +64,38 @@ def search():
 @search_bp.arguments(AutocompleteQuery, location="query")
 def autocomplete(query):
     """Search available songs for autocomplete."""
+    import re as _re
+
+    def _extract_ytid_from_path(path: str):
+        if not path:
+            return None
+        # Padrao nosso download: ---VIDEID.ext (ex: musica---boE0xfp7u2M.mp4)
+        m = _re.search(r"---([a-zA-Z0-9_-]{11})(?:\.[a-zA-Z0-9]{2,6})?$", str(path))
+        if m and m[1]:
+            return m[1]
+        # Padrao [VIDEID]
+        m = _re.search(r"\[([a-zA-Z0-9_-]{11})\]", str(path))
+        if m and m[1]:
+            return m[1]
+        # Padrao ?v=VIDEID (se path for URL)
+        m = _re.search(r"[?&]v=([a-zA-Z0-9_-]{11})", str(path))
+        if m and m[1]:
+            return m[1]
+        return None
+
     k = get_karaoke_instance()
     q = query["q"].lower()
     result = []
     for each in k.song_manager.songs:
         if q in each.lower():
+            display = k.song_manager.display_name_from_path(each)
+            ytid = _extract_ytid_from_path(each)
             result.append(
                 {
                     "path": each,
-                    "fileName": k.song_manager.display_name_from_path(each),
+                    "fileName": display,
                     "type": "autocomplete",
+                    "ytid": ytid or "",
                 }
             )
     response = current_app.response_class(response=json.dumps(result), mimetype="application/json")

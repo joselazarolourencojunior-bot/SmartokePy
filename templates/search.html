@@ -490,20 +490,45 @@
 				}
 			},
 			render: {
-				option: function (item, escape) {
-					return (
-						'<div class="row">' +
-						'<div class="col-icon"><i class="icon icon-music has-text-info"></i></div>' +
-						'<div class="col-text">' +
-						escape(item.fileName) +
-						"</div>" +
-						"</div>"
-					);
-				},
-				optgroup_header: function (data, escape) {
-					return '<div class="optgroup-header">' + escape(data.label) + "</div>";
-				},
-			},
+								option: function (item, escape) {
+										// [V66 - CORRECAO FATAL]:
+										// O selectize gera o HTML do option do autocomplete aqui.
+										// ANTES: nenhum atributo data-* no HTML -> nosso HOVER nao tinha
+										// acesso ao ytID, tinha que adivinhar do textContent (fileName)
+										// que nao tem ID nenhum, estava sempre NULL.
+										// AGORA: injeta data-ytid / data-path / data-title DIRETO no HTML,
+										// e extrai tambem do item.ytid (enviado agora pelo backend).
+										var ytid = item.ytid || "";
+										// Fallback: se backend nao enviou ytid, tenta extrair do item.path
+										// (redundancia segura - se backend der erro, frontend acerta).
+										if (!ytid && item.path) {
+												var m = String(item.path).match(/---([a-zA-Z0-9_-]{11})(?:\.[a-zA-Z0-9]{2,6})?$/);
+												if (m && m[1]) ytid = m[1];
+												if (!ytid) {
+														var m2 = String(item.path).match(/\[([a-zA-Z0-9_-]{11})\]/);
+														if (m2 && m2[1]) ytid = m2[1];
+												}
+										}
+										var titleEscaped = escape(item.fileName);
+										var pathEscaped = escape(item.path || "");
+										var ytidEscaped = escape(ytid || "");
+										return (
+												'<div class="row" data-ytid="' + ytidEscaped + '"' +
+												' data-path="' + pathEscaped + '"' +
+												' data-title="' + titleEscaped + '"' +
+												(ytid ? ' data-has-ytid="1"' : '') + '>' +
+												'<div class="col-icon"><i class="icon icon-music has-text-info"></i></div>' +
+												'<div class="col-text">' +
+												titleEscaped +
+												(ytid ? '<span style="display:none">---' + ytidEscaped + '</span>' : '') +
+												"</div>" +
+												"</div>"
+										);
+								},
+								optgroup_header: function (data, escape) {
+									return '<div class="optgroup-header">' + escape(data.label) + "</div>";
+								},
+							},
 			load: function (query, callback) {
 				if (query.length < 2) return callback;
 				$.ajax({
@@ -938,40 +963,69 @@
 		// Re-bind a cada 1s caso novos li sejam criados dinamicamente (mutations)
 		setInterval(yp_bindSearchResultHovers, 1000);
 
-		// [V65 - BUG2 CORRIGIDO]: HOVER no AUTOCOMPLETE DO SELECTIZE
-		//   (musicas JA EXISTENTES na biblioteca local - dropdown "Cancoes Disponiveis"
-		//    que o usuario passou o mouse na screenshot - antes NUNCA tinha preview).
-		//   Como esses items nao tem data-ytID, extrai o ID YOUTUBE do NOME DO ARQUIVO
-		//   (padrao nosso ---VIDEID.ext, ou [VIDEID]) e mostra a capa.
+		// [V66 - BUG2 DEFINITIVAMENTE CORRIGIDO]: HOVER no AUTOCOMPLETE SELECTIZE DROPDOWN
+		//   ANTES: pegava textContent (fileName, que NAO TEM ID) → sempre NULL.
+		//   AGORA: (a) BACKEND injeta ytid direto no JSON autocomplete (ytid: "boE0xfp7u2M").
+		//          (b) SELECTIZE render: option COLOCA data-ytid / data-path / data-title ATRIBUTO
+		//              DIRETO no HTML do <div class="row"> DENTRO do .option.
+		//          (c) HOVER bind PEGA ESSES ATRIBUTOS (nao mais texto) → 100% de acerto.
 		function yp_bindSelectizeHovers() {
-			var opts = document.querySelectorAll(".selectize-dropdown-content .option, div.selectize-dropdown .option");
+			// Alvo: <div class="option"> (gerado pelo selectize) que TEM o .row[data-ytid] dentro
+			var opts = document.querySelectorAll(
+				".selectize-dropdown-content .option, div.selectize-dropdown .option, .selectize-dropdown-content .row[data-ytid], div.selectize-dropdown .row[data-ytid]"
+			);
 			opts.forEach(function (opt) {
 				if (opt._yp_bound_sel) return;
 				opt._yp_bound_sel = true;
 				opt.addEventListener("mouseenter", function () {
-					// Pega o texto do item (nome do arquivo / display name)
-					var txt = (opt.textContent || opt.innerText || "").trim();
-					var id = yp_extractIdFromFilenameOrUrl(txt);
-					// Tambem tenta pegar o data-value ou value (que muitas vezes é o path arquivo)
+					// Pega o row (se opt for .option, pega o filho .row com data-ytid)
+					var row = opt;
+					if (!row.getAttribute || !row.getAttribute("data-ytid")) {
+						// opt é o .option, pega o filho .row
+						var found = row.querySelector("div.row[data-ytid]");
+						if (found) row = found;
+						// fallback: qualquer filho com data-ytid
+						if (!row.getAttribute || !row.getAttribute("data-ytid")) {
+							var any = opt.querySelector("[data-ytid]");
+							if (any) row = any;
+						}
+					}
+					// Pega atributos DIRETO do data-ytid (enviado pelo backend V66)
+					var id = null;
+					var title = "";
+					var path = "";
+					if (row && row.getAttribute) {
+						id = row.getAttribute("data-ytid") || (row.dataset ? row.dataset.ytid : null);
+						title = row.getAttribute("data-title") || (row.dataset ? row.dataset.title : null) || "";
+						path = row.getAttribute("data-path") || (row.dataset ? row.dataset.path : null) || "";
+					}
+					// Fallback 1: pegamos o path via .option data-value (selectize as vezes coloca)
 					if (!id && opt.getAttribute) {
 						var val = opt.getAttribute("data-value") || opt.getAttribute("value") || "";
 						if (val) id = yp_extractIdFromFilenameOrUrl(val) || yp_extractIdFromFilenameOrUrl(decodeURIComponent(val));
+						if (!title && val) title = yp_extractIdFromFilenameOrUrl(val) ? val.replace(/^.*[\\/]/, "").replace(/\.[a-zA-Z0-9]{2,6}$/, "") : "";
+					}
+					// Fallback 2: ainda sem id, extrai do path / textContent (ultimo recurso)
+					if (!id) {
+						var txt = (opt.textContent || opt.innerText || "").trim();
+						id = yp_extractIdFromFilenameOrUrl(txt);
+						if (!title && txt) title = txt;
 					}
 					if (id) {
-						// Mostra preview (sem canal/duracao, pois nao temos metadados so do nome do arquivo)
 						yp_setPreview({
 							id: id,
-							title: txt || id,
+							title: title || id,
 							channel: "",
 							duration: "",
 							url: "https://www.youtube.com/watch?v=" + id,
 							thumb: "",
 						});
-						// Highlight no option
-						document.querySelectorAll(".selectize-dropdown-content .option.yp-hovered, div.selectize-dropdown .option.yp-hovered").forEach(function (x) {
-							if (x !== opt) x.classList.remove("yp-hovered");
+						// Highlight no option (cor azul claro)
+						document.querySelectorAll(".selectize-dropdown-content .option.yp-hovered, div.selectize-dropdown .option.yp-hovered, .selectize-dropdown-content .row.yp-hovered, div.selectize-dropdown .row.yp-hovered").forEach(function (x) {
+							if (x !== opt && x !== row) x.classList.remove("yp-hovered");
 						});
 						opt.classList.add("yp-hovered");
+						row.classList.add("yp-hovered");
 					}
 				});
 			});
