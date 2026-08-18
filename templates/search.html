@@ -255,8 +255,8 @@
 	   ============================================================ */
 	#youtube-preview-panel {
 		width: 100%;
-		max-width: 480px;
-		margin: 0 auto 0 auto;
+		max-width: 400px;                 /* V73: DIMINUIR 480 -> 400px (compacto alinhado, nao sobrepoe) */
+		margin: 1.25rem auto 0 auto;       /* V73: SEMPRE ABAIXO, centralizado, margin-top 1.25rem */
 		border: 1px solid #444;
 		border-radius: 10px;
 		background: linear-gradient(180deg, #1f2424 0%, #161a1a 100%);
@@ -264,44 +264,25 @@
 		box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
 		opacity: 0.9;
 		transition: all 0.25s ease;
-		/* [V69]: ZINDEX e POSICAO STICKY para ficar FIXO na lateral direita enquanto rola.
-		   Evita dropdown Selectize sobrepor (se sobrepor, z-index maior vence). */
 		position: relative;
 		z-index: 500;
 	}
 
 	/* ============================================================
-	   V69: LAYOUT 2 COLUNAS! Resolve 100% sobreposicao dropdown / preview.
+	   V73: REMOVIDO layout 2 COLUNAS do V69 (causava sobreposicao do
+	   dropdown Selectize com o painel sticky lateral direita).
+	   VOLTAMOS layout 1 COLUNA (como era V68 original):
+	   Preview YouTube SEMPRE ABAIXO de TUDO, centralizado, 400px.
+	   Desta forma, dropdown Selectize e search results NUNCA sao
+	   sobrepostos. Fallback global: 1 coluna normal para TELAS TODAS.
 	   ============================================================ */
-	@media (min-width: 1000px) {  /* V72: antes min 1100, agora 1000 (atualiza + telas desktop) */
-		.v69-grid-2col {
-			display: grid !important;
-			grid-template-columns: minmax(540px, 1.2fr) minmax(400px, 480px);  /* V71: min 540px esquerdo (thumbnail 200 + texto 340) */
-			gap: 1.25rem;
-			align-items: start;
-			width: 100%;
-			min-width: 0;
-			max-width: 1400px;
-			margin: 0 auto;
-		}
-		.v69-col-left  { grid-column: 1; min-width: 0; width: 100%; }
-		.v69-col-right { grid-column: 2; min-width: 0; width: 100%; position: sticky; top: 18px; z-index: 500; }
-		#youtube-preview-panel { max-width: 100%; width: 100%; margin: 0; }
-	}
-	/* V72: fallback SE a media query 2 colunas NAO ativar (telas estreitas):
-	   Painel preview OCUPA 100% width centralizado max 480px (como era V68 antigo).
-	   IMPORTANTE: evita o bug do preview ficar "pequeno / flutuando no canto esquerdo". */
-	.v69-grid-2col {
-		display: block;   /* fallback = 1 coluna normal */
-		width: 100%;
-		min-width: 0;
-	}
-	@media (max-width: 999px) {
-		#youtube-preview-panel { max-width: 480px; margin: 1rem auto !important; }
-	}
-	/* [V69]: z-index do selectize DROPdown ABAIXO do preview, para nao cobrir quando tela for pequena / 1 coluna. */
-	.selectize-dropdown { z-index: 400 !important; }
-	.selectize-control { position: relative; z-index: 1; }
+	.v69-grid-2col { display: block !important; width: 100%; min-width: 0; }
+	.v69-col-left, .v69-col-right { display: block !important; width: 100%; min-width: 0; position: static !important; }
+
+	/* V73: z-index DROPDOWN Selectize SEMPRE o MAIOR de tudo!
+	   (garante que dropdown sobreponha QUALQUER coisa, inclusive preview) */
+	.selectize-dropdown { z-index: 999999 !important; }
+	.selectize-control { position: relative; z-index: 999998; }
 	#youtube-preview-panel.active {
 		opacity: 1;
 		border-color: #3e8ed0;
@@ -1545,12 +1526,16 @@
 {% else %} {% endif %}
 
 </div> {# / .v69-col-left (fim coluna esquerda) #}
+</div> {# / .v69-grid-2col (fim layout 2 colunas — V73: layout grid desativado via CSS, tudo 1 coluna) #}
 
 {# ============================================================
-   V69: COLUNA DIREITA STICKY — preview YouTube FIXO do lado da lista.
-   NUNCA MAIS o dropdown do Selectize sobrepoe a capa!
+   V73: PREVIEW YOUTUBE SEMPRE ABAIXO DE TUDO!
+   (removemos sticky lateral direita para NAO sobrepor o dropdown do Selectize
+   com os nomes das músicas). Como é 1 coluna, fica SEMPRE ABAIXO da lista,
+   centralizado, tamanho compacto (400px max). Dropdown Selectize tem z-index
+   999999 (MAIOR DE TUDO), então NUNCA mais é sobreposto.
    ============================================================ #}
-<div class="v69-col-right">
+<div class="v73-preview-area" style="width: 100%; display: block; clear: both;">
 	<div id="youtube-preview-panel">
 				<div id="yp-empty">
 					👇 Passe o mouse sobre os resultados de busca abaixo para ver a CAPA DO YOUTUBE do vídeo aqui.
@@ -1615,7 +1600,6 @@
 					Tu navegador no suporta player HTML5.
 				</video>
 			</div> {# / #youtube-preview-panel #}
-</div> {# / .v69-col-right (fim coluna direita) #}
-</div> {# / .v69-grid-2col (fim layout 2 colunas) #}
+</div> {# / .v73-preview-area (fim area preview abaixo de tudo) #}
 
 {% endblock %}
