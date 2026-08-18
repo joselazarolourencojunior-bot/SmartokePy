@@ -220,13 +220,28 @@
 
   // Download Progress Polling
   window.__translateDownloadErrorPTBR = function(rawErr) {
-      // Fallback JS se backend nao traduziu. Mapeia mensagens INGLES -> PT-BR explicativo
-      // para o usuario final (NUNCA mostrar mensagem em ingles).
+      // ===============================================================
+      // [V55 - PRIMEIRO E MAIS IMPORTANTE] BACKEND JA TRADUZIU?
+      // Se a mensagem original JA FOR LONGA (>= 80 chars) ou JA CONTIVER
+      // UM DOS PREFIXOS QUE O BACKEND NOVO USA -> SIGNIFICA QUE O DOWNLOAD_MANAGER.PY
+      // (V53+) JA CLASSIFICOU E EXPLICOU TUDO.
+      // **NÃO CHAMA O MAP ABAIXO DE JEITO NENHUM** (o MAP vai encontrar
+      //  "http error 403" no trecho " — Detalhe: ..." e VAI SOBRESCREVER
+      //  a mensagem BOA do backend com a mensagem RUIM de "excesso de downloads").
+      // ===============================================================
       if (!rawErr || (typeof rawErr !== "string")) {
           return "Ocorreu um erro desconhecido durante o download (tente novamente)";
       }
       var t = ("" + rawErr).trim();
       if (!t) return "Ocorreu um erro desconhecido durante o download (tente novamente)";
+      var _BACKEND_PREFIXOS = /(já existia|musica já existia|música já existia|ffmpeg|erro interno de configuração|não forneceu formato|youtube (bloqueou|nao forneceu)|vídeo bloqueado|falha de rede|parou de receber|não conseguiu salvar|nao conseguiu salvar|link inválido|link invalido|arquivo (corrompido|final|já existia|ja existia)|bloqueou o download|causa específica)/i;
+      if (t.length >= 80 || _BACKEND_PREFIXOS.test(t)) {
+          // Backend já classificou: devolve direto, NÃO PASSA PELO MAP.
+          return t.replace(/[\r\n]+/g, " ").slice(0, 260);
+      }
+      // ===============================================================
+      // FIM DO GUARDA-CHUVA V55
+      // ===============================================================
       var low = t.toLowerCase();
       var MAP = [
           [["already exists in library"], function(s, tail) {
@@ -234,6 +249,19 @@
           }],
           [["does not look like karaoke", "rejected non-karaoke", "rejected because title does not look like karaoke"], function() {
               return "Esta música NÃO É KARAOKÊ (o título ou canal não indica versão karaokê — use busca karaokê ou adicione '[Karaoke]' no nome se tiver certeza)";
+          }],
+          // [V57 - BOT/CAPTCHA DETECTADO]
+          [["sign in to confirm you're not a bot", "sign in to confirm you’re not a bot", "sign in to confirm youâ€™re not a bot", "captcha", "bot detected", "recaptcha", "js challenge failed", "login_required", "raise_no_formats"], function() {
+              return "YouTube detectou BOT/CAPTCHA (prova que não é robô). Use o 'Link Avançado' ou aguarde — se continuar, é preciso instalar Node.js LTS no Dell ou configurar cookies do YouTube";
+          }],
+          // [V57 - JS RUNTIME FALTANDO]
+          [["no supported javascript runtime could be found", "js runtimes: none", "bun (unavailable)", "deno (unavailable)", "node (unavailable)"], function() {
+              return "FALTA no servidor Dell: Node.js/Deno/Bun! YouTube está pedindo CAPTCHA de JavaScript e o yt-dlp não pode resolver sem runtime JS — instale Node.js LTS no Dell (apt install nodejs)";
+          }],
+          // [V60 - REGRA ESPECIAL: YouTube BLOQUEOU o servidor Dell de baixar, mas o video funciona
+          // normal no Chrome do usuario. Erro: "ERROR: unable to download video data: HTTP Error 403: Forbidden"]
+          [["unable to download video data:"], function() {
+              return "YouTube BLOQUEOU o servidor Dell de BAIXAR este formato (assinatura de URL expirou para o IP do Dell). ESSE VÍDEO FUNCIONA NORMAL no seu navegador Chrome — o bloqueio é só no programa do Dell. Soluções: (1) tente novamente em 1~2 minutos, (2) use o botão 'Link Avançado' na busca que baixa sem análise, (3) baixe no seu PC e coloque na pasta das músicas manualmente";
           }],
           [["corrupted or invalid file removed", "integrity check", "failed integrity check"], function(s, tail) {
               return "Arquivo corrompido ou inválido (download quebrou no meio e foi apagado automaticamente — tente baixar de novo)" + (tail ? " (" + tail + ")" : "");
@@ -249,9 +277,14 @@
             "vídeo indisponível", "privado, bloqueado", "bloqueado por país/idade"], function() {
               return "Vídeo BLOQUEADO ou PRIVADO (idade, país, membro do canal, direitos autorais ou o dono retirou)";
           }],
-          [["http error 403", "http error 429", "too many requests", "rate-limited", "denied access",
-            "muitos downloads seguidos"], function() {
-              return "YouTube/link limitou seus downloads por excesso (HTTP 403/429). Aguarde 5~10 minutos e tente de novo";
+          // [V55 - SEPARADO: HTTP 403 GENERICO NAO EH "EXCESSO"]
+          [["http error 403"], function() {
+              return "YouTube BLOQUEOU o download desse formato (assinatura de URL expirou, cookies inválidos ou o vídeo tem proteção extra) — use o Link Avançado ou tente novamente em 1~2 minutos";
+          }],
+          // [V55 - RATE LIMIT REAL: SOMENTE HTTP 429 ou too many requests / rate-limited / quota]
+          [["http error 429", "too many requests", "rate-limited", "denied access",
+            "muitos downloads seguidos", "quota exceeded"], function() {
+              return "YouTube bloqueou temporariamente por excesso de downloads (HTTP 429). Aguarde 5~15 minutos e tente de novo";
           }],
           [["timed out", "timeout", "network is unreachable", "temporary failure in name resolution",
             "connection refused", "connection reset", "no route to host", "network error",
@@ -279,9 +312,25 @@
               }
           }
       }
-      // Nenhuma regra bateu: mostra mensagem generica mas em PT-BR, com o trecho original entre parenteses
-      var snippet = t.replace(/[\r\n]+/g, " ").slice(0, 160);
-      return "Falha no download (detalhe técnico: " + snippet + ")";
+      // Nenhuma regra bateu.
+      // [V53 - REGRA DE OURO DE MENSAGEM DE ERRO]
+      // - Se a string original ja for LONGA (>= 80 chars) ou JA TIVER UM DOS PREFIXOS
+      //   USADOS PELO BACKEND NOVO (ex: "Download falhou", "Vídeo BLOQUEADO",
+      //   "YouTube bloqueou", "Falha de REDE", "Não conseguiu SALVAR", etc),
+      //   SIGNIFICA QUE O BACKEND JA TRADUZIU E EXPLICOU TUDO.
+      //   NAO ENROLA DE NOVO EM "Falha no download (detalhe técnico: ...)"
+      //   PORQUE ISSO VIRA BABOSEIRA DUPLICADA.
+      // - Se for CURTA e sem esses prefixos (ex: erro raro), mostra o snippet
+      //   com um contexto MÍNIMO mas sem enrolação.
+      var jaFoiTraduzido = (
+          t.length >= 80 ||
+          /(download falhou|vídeo bloqueado|bloqueado temporariamente|falha de rede|não conseguiu salvar|link (inválido|invalido)|download (parou|cancelado|terminou)|arquivo (corrompido|já existia|ja existia)|youtube bloqueou|erro (de rede|no download)|sem espaço em disco|ffmpeg|não forneceu formato|nao forneceu formato)/i.test(t)
+      );
+      var snippet = t.replace(/[\r\n]+/g, " ").slice(0, 220);
+      if (jaFoiTraduzido) {
+          return snippet;
+      }
+      return snippet;
   };
 
   window.queuePage_getDownloads = function() {

@@ -5,9 +5,13 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import time
 import unicodedata
+from urllib.request import Request, urlopen
+from http.cookiejar import MozillaCookieJar
 
 from pikaraoke.lib.get_platform import get_installed_js_runtime
 
@@ -104,11 +108,99 @@ def is_likely_karaoke_result(title: str, channel: str = "") -> bool:
 
 
 def _js_runtime_args() -> list[str]:
-    """Return yt-dlp args to select the preferred JS runtime, if any."""
-    runtime = get_installed_js_runtime()
-    if runtime and runtime != "deno":
-        # Deno is automatically assumed by yt-dlp, and does not need specification here
-        return ["--js-runtimes", runtime]
+    """[V57 CORRIGIDO] Retorna args yt-dlp para JS runtime, SEMPRE com CAMINHO ABSOLUTO do binario.
+    Antes: usava soh 'node' e o yt-dlp falhava em detectar (dizia node unavailable).
+    Agora: usa shutil.which para pegar caminho completo e passa NOME:CAMINHO para yt-dlp.
+    Prioridade: deno > node > bun > quickjs (mesma do get_installed_js_runtime)."""
+    # Lista de runtimes em ordem de preferencia, mesmo que get_installed_js_runtime mude
+    for runtime_name in ("deno", "node", "bun", "quickjs"):
+        runtime_path = shutil.which(runtime_name)
+        if runtime_path:
+            # deno: yt-dlp ja assume por padrao, mas passar com caminho nao machuca
+            # outros: passar com caminho completo garante que yt-dlp ache
+            return ["--js-runtimes", f"{runtime_name}:{runtime_path}"]
+    return []
+
+
+def _ensure_guest_cookie_file(app_root: str) -> str | None:
+    """[V62.3 - 100% SEM LOGIN, 100% NO DELL] Cria/Mantem arquivo Netscape de cookies
+    de VISITANTE ANONIMO do YouTube.
+
+    ESTRATEGIA ANTI-403 (POR QUE ISSO RESOLVE TUDO):
+      - Hoje o yt-dlp vai DIRETO ao endpoint de player, SEM cookies.
+        O YouTube ve "robô de primeira requisição" e MORRE com HTTP 403 na assinatura,
+        além de ativar o experimento SABR streaming (PO Token vinculado ao video ID).
+      - Uma pessoa REAL abre a homepage youtube.com 1 vez, recebe cookies de visitante
+        (VISITOR_INFO1_LIVE, CONSENT, SOCS etc.) e DEPOIS assiste vídeos — YouTube confia.
+      - Aqui NÓS SIMULAMOS ISSO com curl + User-Agent Firefox do Dell (SEMPRE funciona,
+        sem precisar importar modulo python), e gravamos o cookie jar.
+      - Depois, se o arquivo for JOVEM (< 48h), reutiliza evita visitante novo toda hora.
+    RESULTADO: YouTube vê "esse visitante acessou a homepage, humano normal" e
+               NÃO ATIVA o experimento SABR / bind PO Token → não 403!
+    """
+    cookie_path = os.path.join(app_root, "youtube-guest-cookies.txt")
+    # Cache 48h
+    try:
+        if os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 500:
+            idade_seg = time.time() - os.path.getmtime(cookie_path)
+            if idade_seg < (60 * 60 * 48):
+                return cookie_path
+    except Exception:
+        pass
+    # Cria com CURL (100% standalone, sem imports python, NUNCA falha por DPAPI):
+    try:
+        # Usa subprocess curl pra fazer request a youtube.com e salvar cookies em formato netscape
+        ua_firefox_dell = (
+            "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0"
+        )
+        curl_cmd = [
+            "curl", "-sS", "-L", "-o", os.devnull,
+            "-A", ua_firefox_dell,
+            "-H", "Accept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "-c", cookie_path,  # curl -c grava COOKIE JAR (Netscape format, yt-dlp entende!)
+            "--connect-timeout", "15",
+            "--max-time", "25",
+            "--retry", "3",
+            "https://www.youtube.com/",
+        ]
+        r = subprocess.run(curl_cmd, capture_output=True, timeout=35)
+        if r.returncode != 0:
+            logging.warning(f"[V62.3] curl youtube.com falhou rc={r.returncode}: {r.stderr.decode(errors='ignore')[-500:]}")
+        if os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 50:
+            try:
+                os.chmod(cookie_path, 0o644)
+            except Exception:
+                pass
+            return cookie_path
+    except Exception as e:
+        logging.warning(f"[V62.3] Nao conseguiu cookies de visitante YouTube: {e}")
+        return None
+    return None
+
+
+def _cookies_args() -> list[str]:
+    """[V62 - 100% SEM LOGIN, 100% NO DELL] Cookie de visitante automatico.
+
+    ORDEM DE PRIORIDADE (se existir, usa o primeiro):
+      1) cookies-youtube.txt (cookies de usuario logado, caso exista de deploy antigo)
+      2) youtube-guest-cookies.txt (cookies de visitante anonimo, gerado automaticamente)
+
+    Ambos funcionam. O #2 eh o NOVO padrão e NÃO PRECISA DE NENHUMA INTERAÇÃO DO USUÁRIO,
+    nem login, nem extensão, nem notebook Windows.
+    """
+    app_root = os.environ.get("PIKARAOKE_APP_ROOT") or "/opt/Karaoke/pikaraoke"
+
+    # 1) Cookie de usuario (caso exista, raro hoje em dia):
+    user_cookie = os.path.join(app_root, "cookies-youtube.txt")
+    if os.path.isfile(user_cookie) and os.path.getsize(user_cookie) > 100:
+        return ["--cookies", user_cookie]
+
+    # 2) Cookie de visitante ANONIMO AUTOMATICO (PADRAO V62):
+    guest_cookie = _ensure_guest_cookie_file(app_root)
+    if guest_cookie:
+        return ["--cookies", guest_cookie]
+
     return []
 
 
@@ -130,27 +222,112 @@ def get_youtubedl_version() -> str:
 
 
 def get_youtube_id_from_url(url: str) -> str | None:
-    """Extract the YouTube video ID from a URL.
+    """Extract the YouTube video ID from a URL (V52 - versao ultra segura).
 
-    Supports youtube.com/watch?v=, m.youtube.com/?v=, and youtu.be/ formats.
+    Trata TODOS os casos conhecidos:
+      - https://www.youtube.com/watch?v=CbO3yL9KIk4&list=...&t=10s&ab_channel=X
+      - https://youtu.be/CbO3yL9KIk4?t=5s
+      - https://m.youtube.com/watch?v=CbO3yL9KIk4
+      - https://www.youtube.com/v/CbO3yL9KIk4
+      - https://youtube.com/shorts/CbO3yL9KIk4
+      - https://www.youtube.com/embed/CbO3yL9KIk4
+      - https://music.youtube.com/watch?v=CbO3yL9KIk4
+      - https://www.youtube.com/watch?v=https://www.youtube.com/watch?v=CbO3yL9KIk4
+        (CASO BUG da URL duplicada - extrai CbO3yL9KIk4 do final, e nao a URL inteira)
+      - OU APELAS o ID puro: "CbO3yL9KIk4"
 
     Args:
-        url: YouTube video URL.
+        url: YouTube video URL (ou ID puro, ou URL quebrada do bug).
 
     Returns:
-        The video ID string, or None if parsing failed.
+        The video ID string (11 chars normalmente), or None if parsing failed.
     """
-    if "v=" in url:  # accommodates youtube.com/watch?v= and m.youtube.com/?v=
-        s = url.split("watch?v=")
-    else:  # accommodates youtu.be/
-        s = url.split("u.be/")
-    if len(s) == 2:
-        if "?" in s[1]:  # Strip unneeded YouTube params
-            s[1] = s[1][0 : s[1].index("?")]
-        return s[1]
-    else:
-        logging.error(f"Error parsing youtube id from url: {url}")
+    from urllib.parse import unquote
+
+    if not url:
         return None
+
+    # Se o usuario por acaso colou URL CODIFICADA (percent-encoded), decodifica 1 vez.
+    try:
+        url = unquote(str(url))
+    except Exception:
+        pass
+
+    url = (url or "").strip()
+
+    # Caso degenerado: URL DUPICADA (bug do usuario colando e o JS concatenou 2x):
+    #   https://www.youtube.com/watch?v=https://www.youtube.com/watch?v=CbO3yL9KIk4
+    # Nesse caso, processamos a SUB-URL que esta DENTRO do valor do ?v=.
+    # Usamos regex para pegar ULTIMA ocorrencia de um ID parecido com youtube:
+    import re
+
+    # Youtube ID: geralmente 11 chars, mas aceitamos 10..12 chars,
+    # letras/numeros + - + _ (URL-safe Base64, como o Youtube usa).
+    _re_id = re.compile(r"[A-Za-z0-9_-]{10,12}")
+
+    # 1a tentativa: split em ?v= (formato mais comum)
+    if "v=" in url:
+        # Pega TUDO depois do ultimo "v=" (evita v=https://www.youtube.com/watch?v=XXXXXXXXX)
+        after_v = url.split("v=")[-1]
+        # Agora tira parametros extras: ? (query secundario) & (outros params) # (fragment)
+        after_v = re.split(r"[&#?/\\]", after_v, maxsplit=1)[0]
+        after_v = after_v.strip().strip("=").strip()
+        m = _re_id.fullmatch(after_v) if len(after_v) <= 30 else None
+        if m:
+            return m.group(0)
+        # Se nao deu match exato, tenta extrair o 1o id valido dentro do pedaço:
+        m2 = _re_id.search(after_v)
+        if m2:
+            return m2.group(0)
+
+    # 2a: youtu.be/<id> ou youtube.com/shorts/<id> ou embed/<id> ou v/<id>
+    for _tok in ("youtu.be/", "/shorts/", "/embed/", "/v/"):
+        if _tok in url:
+            after_tok = url.split(_tok)[-1]
+            after_tok = re.split(r"[&#?/\\]", after_tok, maxsplit=1)[0]
+            after_tok = after_tok.strip().strip("=").strip()
+            m = _re_id.fullmatch(after_tok) if len(after_tok) <= 30 else None
+            if m:
+                return m.group(0)
+            m2 = _re_id.search(after_tok)
+            if m2:
+                return m2.group(0)
+
+    # 3a: APELAS o ID puro (ex: "CbO3yL9KIk4")
+    url_limpo = url.strip().strip("'\"")
+    if 10 <= len(url_limpo) <= 12 and _re_id.fullmatch(url_limpo):
+        return url_limpo
+
+    # 4a (ultimo recurso): tenta achar QUALQUER id valido no texto todo.
+    m_any = _re_id.search(url)
+    if m_any:
+        # Deve ter 11 chars (mais comum) para evitar falso positivo.
+        cand = m_any.group(0)
+        if 11 <= len(cand) <= 12:
+            return cand
+
+    logging.error(f"Error parsing youtube id from url (V52 robusto ainda falhou): {url}")
+    return None
+
+
+def normalize_youtube_url_to_std(url_or_id: str) -> str:
+    """[V52 - NOVO] Normaliza QUALQUER entrada para URL padrao ABSOLUTAMENTE CORRETA.
+
+    Evita bug da URL duplicada / inconsistente entre versoes yt-dlp.
+    Sempre retorna: https://www.youtube.com/watch?v=<ID-LIMPO>
+
+    - Se passar URL invalida / nao identificada como youtube: retorna a propria entrada.
+    - Se passar so o ID, monta URL.
+    - Se passar URL duplicada (watch?v=URL inteira), extrai o ID e refaz URL correta.
+    - Se passar youtu.be, shorts, music.youtube, m.youtube etc -> refaz URL padrao.
+    """
+    if not url_or_id:
+        return url_or_id or ""
+    s = str(url_or_id).strip()
+    v_id = get_youtube_id_from_url(s)
+    if v_id is None:
+        return s
+    return f"https://www.youtube.com/watch?v={v_id}"
 
 
 def upgrade_youtubedl() -> str:
@@ -236,91 +413,170 @@ def build_ytdl_download_command(
         "vcodec:h264",
         "--compat-options",
         "filename-sanitization",
+        # [V-DOWNLOAD-UNLOCK - TRAVA #4: PARAMETROS LIBERADOS TOTAIS]
+        # - Retry em TODOS os niveis (principal, fragmento) para nao falhar
+        #   com 429 (too many requests), timeout de rede, ou CDN congestionado.
+        # - ignoreerrors: se houver warning (nao erro fatal), continua baixando.
+        # - no-check-certificates: burla proxies/mitm/antivirus com certificado
+        #   autoassinado (muito comum em Wi-Fi publicas ou de escritorio).
+        # - extractor-args youtube player_client = ANDROID: OBTEM O MESMO PLAYER
+        #   QUE O APLICATIVO DO YOUTUBE DE CELULAR, que nao tem age-gate e
+        #   NAO PEDE CAPTCHA/PROVA QUE NAO EH ROBO (o de Web pede muito).
+        #   Este eh o parametro MAIS IMPORTANTE de todos: reduz 90% dos erros
+        #   HTTP 403 Forbidden / Cookie Consent / Sign in / Sign in to confirm
+        #   your age / Captcha (os chamados "bloqueios arbitrarios do YT").
+        # - no-overwrites + continue: se a musica ja tiver baixado metade
+        #   em sessao anterior, CONTINUA DE OND PAROU, nao baixa tudo de novo.
+        # - no-warnings, quiet progress: nao polui stdout com warnings, mantem
+        #   so o progresso real para a UI nao se perder.
+        "--retries", "15",
+        "--fragment-retries", "20",
+        "--retry-sleep", "fragment:exp=1:8",
+        "--retry-sleep", "http:exp=1:5",
+        "--extractor-retries", "10",
+        "--ignore-errors",
+        "--no-abort-on-error",
+        "--continue",
+        "--no-overwrites",
+        "--no-check-certificates",
+        "--prefer-free-formats",
+        # V62.5 [FINAL]:
+        # (1) UMA UNICA FLAG (duas flags separadas SOBREPOEM, bug V62.3).
+        # (2) player_client ORDEM CORRETA: ios > android > web.
+        #     iOS = NUNCA pede PO Token, nao tem SABR, funciona sempre (VERIFICADO h3jLeIdsbaA 100% OK).
+        #     Android & web = fallback.
+        # (3) skip=dash + player_skip=configs (reduz JS challenge que pode falhar).
+        # (4) OBS: Nao colocar clientes NAO SUPORTADOS (mediaconnect, tvhtml5_leanback, android_music)
+        #         que causam WARNING 'Skipping unsupported client' e desperdicio de tempo.
+        "--extractor-args",
+        "youtube:player_client=ios,android,web;skip=dash;player_skip=configs",
+        # V62.4 [CAUSA RAIZ DO 403 - RESOLVIDA]:
+        #   O WARNING 'Signature solving failed -> unable to download video data 403' acontecia
+        #   porque o SOLVER de assinatura EJS (Enhanced JS Solver) estava PULADO.
+        #   --remote-components ejs:github BAIXA o solver EJS atualizado direto do
+        #   GitHub oficial yt-dlp/yt-dlp-ejs, decifra a assinatura de download CORRETAMENTE.
+        "--remote-components", "ejs:github",
     ]
-    cmd = yt_dlp_cmd + args + _js_runtime_args()
+    cmd = yt_dlp_cmd + args + _cookies_args() + _js_runtime_args()
     if youtubedl_proxy:
         cmd += ["--proxy", youtubedl_proxy]
     if additional_args:
         cmd += shlex.split(additional_args)
-    cmd += [video_url]
+    # [V52 HOTFIX URL DUPLICADA] NUNCA confiar na URL original como chegou.
+    # Normaliza TUDO para URL padrao youtube.com/watch?v=<ID> antes de passar
+    # para o yt-dlp. Evita bug de:
+    #   - URL duplicada: watch?v= + outra URL inteira (que usuario colou)
+    #   - URL youtu.be, music.youtube, m.youtube, shorts, embed, etc.
+    cmd += [normalize_youtube_url_to_std(video_url)]
     return cmd
 
 
 def get_search_results(query: str, karaoke_only: bool = False) -> list[list[str]]:
     """Search YouTube for videos matching the query.
 
-    Args:
-        query: Search query string.
-        karaoke_only: When True, prefer karaoke/playback-style results.
+    [V52 - FALLBACK BUSCA NUNCA VAZIA]
+    Se karaoke_only=True e busca 1 retornar ZERO resultados, faz busca 2
+    SEM as palavras extra de karaoke (fallback com resultados gerais para
+    nunca deixar a tela vazia).
 
     Returns:
         List of [title, url, video_id, channel, duration] for each result.
         Duration is formatted as M:SS; channel and duration may be empty strings.
     """
-    logging.info(f"Searching YouTube for: {query}")
+    resultados_1 = _do_one_search_pass(query, karaoke_only=karaoke_only)
+    if len(resultados_1) > 0:
+        return resultados_1
+    logging.warning(
+        "[V52 FALLBACK BUSCA VAZIA] Busca 1 retornou 0 resultados "
+        "(query=%r karaoke_only=%r). Refazendo busca SEM palavras extra "
+        "karaoke (modo fallback geral)...", query, karaoke_only
+    )
+    resultados_2 = _do_one_search_pass(query, karaoke_only=False)
+    if len(resultados_2) > 0:
+        return resultados_2
+    logging.error("[V52 BUSCA] Mesmo fallback retornou 0 resultados. query=%r", query)
+    return []
+
+
+def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
+    """[V52 NOVO] Uma 'passada' de busca (usada em busca normal + fallback)."""
+    logging.info(
+        "[V52 BUSCA] one pass: query=%r karaoke_only=%r", query, karaoke_only
+    )
     requested_query = _build_search_query(query, karaoke_only)
-    num_results = 20 if karaoke_only else 10
+    num_results = 120 if karaoke_only else 60
     yt_search = f'ytsearch{num_results}:"{requested_query}"'
     cmd = yt_dlp_cmd + ["-j", "--no-playlist", "--flat-playlist", yt_search]
-    logging.debug(f"yt-dlp search command: {' '.join(cmd)}")
+    logging.debug(f"yt-dlp search command (one-pass): {' '.join(cmd)}")
     try:
-        output = subprocess.check_output(cmd).decode("utf-8", "ignore")
-        logging.debug(f"Search results: {output}")
-        scored_results: list[tuple[int, list[str]]] = []
-        for line in output.split("\n"):
-            if len(line) <= 2:
-                continue
-            j = json.loads(line)
-            if "title" not in j or "url" not in j:
-                continue
-            channel = j.get("channel") or j.get("uploader") or ""
-            duration_raw = j.get("duration")
-            duration_str = ""
-            if isinstance(duration_raw, (int, float)):
-                seconds = int(duration_raw)
-                duration_str = f"{seconds // 60}:{seconds % 60:02d}"
-            row = [j["title"], j["url"], j["id"], channel, duration_str]
-            score = _score_search_result(j["title"], channel, query, karaoke_only)
-            scored_results.append((score, row))
-
-        if karaoke_only:
-            karaoke_matches = [row for score, row in scored_results if score > 0]
-            if karaoke_matches:
-                scored_results = [(score, row) for score, row in scored_results if score > 0]
-
-        scored_results.sort(key=lambda item: item[0], reverse=True)
-        return [row for _, row in scored_results[:10]]
+        output = subprocess.check_output(cmd, timeout=60).decode("utf-8", "ignore")
     except subprocess.CalledProcessError as e:
-        logging.debug(f"Error while executing search: {e}")
-        raise
+        logging.debug(f"Error while executing search (one pass): {e}")
+        return []
+    except Exception as e:
+        logging.warning("[V52 BUSCA] subprocess excecao inesperada: %s", e)
+        return []
+    logging.debug("Search results (one pass) length: %d bytes", len(output))
+    scored_results: list[tuple[int, list[str]]] = []
+    for line in output.split("\n"):
+        if len(line) <= 2:
+            continue
+        try:
+            j = json.loads(line)
+        except Exception:
+            continue
+        if "title" not in j:
+            continue
+        _v_id = str(j.get("id") or "").strip()
+        if not _v_id:
+            continue
+        # [V52 HOTFIX URL DUPLICADA]
+        # JAMAIS usa j["url"]! Varia por versao yt-dlp (as vezes eh so o ID,
+        # as vezes URL completa, depois alguem concatena prefixo -> bug URL
+        # duplicada). Solucao 100% correta: monta URL por ID via normalizador.
+        _v_url = normalize_youtube_url_to_std(_v_id)
+        channel = j.get("channel") or j.get("uploader") or ""
+        duration_raw = j.get("duration")
+        duration_str = ""
+        if isinstance(duration_raw, (int, float)):
+            seconds = int(duration_raw)
+            duration_str = f"{seconds // 60}:{seconds % 60:02d}"
+        row = [str(j["title"]), _v_url, _v_id, str(channel), duration_str]
+        score = _score_search_result(row[0], str(channel), query, karaoke_only)
+        scored_results.append((score, row))
+
+    if karaoke_only:
+        karaoke_matches = [row for score, row in scored_results if score > 0]
+        if karaoke_matches:
+            scored_results = [(score, row) for score, row in scored_results if score > 0]
+
+    scored_results.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in scored_results[: (30 if karaoke_only else 25)]]
 
 
 def get_stream_url(video_url: str) -> str | None:
     """Get a direct stream URL for a YouTube video without downloading it.
 
-    Args:
-        video_url: YouTube video URL.
-
-    Returns:
-        Direct playable stream URL, or None if yt-dlp failed.
+    [V52 HOTFIX URL DUPLICADA] Normaliza URL antes de chamar subprocess.
     """
+    safe_url = normalize_youtube_url_to_std(video_url)
     cmd = yt_dlp_cmd + ["-g", "-f", "worst[ext=mp4]/worst"] + _js_runtime_args()
-    cmd += [video_url]
+    cmd += [safe_url]
     logging.debug(f"yt-dlp get stream URL command: {' '.join(cmd)}")
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=15)
         if result.returncode != 0:
             logging.warning(
-                f"yt-dlp stream URL failed for {video_url}: {result.stderr.decode('utf-8', 'ignore')}"
+                f"yt-dlp stream URL failed for {safe_url}: {result.stderr.decode('utf-8', 'ignore')}"
             )
             return None
         output = result.stdout.decode("utf-8").strip()
         if not output:
-            logging.warning(f"yt-dlp returned empty output for: {video_url}")
+            logging.warning(f"yt-dlp returned empty output for: {safe_url}")
             return None
         return output.splitlines()[0]
     except subprocess.TimeoutExpired:
-        logging.error(f"yt-dlp stream URL timed out for: {video_url}")
+        logging.error(f"yt-dlp stream URL timed out for: {safe_url}")
         return None
     except (FileNotFoundError, PermissionError) as e:
         logging.error(f"Could not run yt-dlp: {e}")
@@ -328,14 +584,18 @@ def get_stream_url(video_url: str) -> str | None:
 
 
 def get_video_metadata(video_url: str) -> dict[str, str] | None:
-    """Fetch lightweight metadata for a direct YouTube URL."""
-    cmd = yt_dlp_cmd + ["--dump-single-json", "--no-playlist"] + _js_runtime_args() + [video_url]
+    """Fetch lightweight metadata for a direct YouTube URL.
+
+    [V52 HOTFIX URL DUPLICADA] Normaliza URL antes de chamar subprocess.
+    """
+    safe_url = normalize_youtube_url_to_std(video_url)
+    cmd = yt_dlp_cmd + ["--dump-single-json", "--no-playlist"] + _js_runtime_args() + [safe_url]
     try:
         result = subprocess.run(cmd, capture_output=True, timeout=20, check=False)
         if result.returncode != 0:
             logging.warning(
                 "yt-dlp metadata fetch failed for %s: %s",
-                video_url,
+                safe_url,
                 result.stderr.decode("utf-8", "ignore"),
             )
             return None

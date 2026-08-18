@@ -530,21 +530,36 @@
 						song_added_by: user || "",
 						queue: $("#add-to-queue-search").is(":checked"),
 					}),
-					success: function () {
-						$btn.removeClass("is-loading").addClass("is-success")
-							.html('<i class="icon icon-ok"></i>');
+					success: function (data) {
+						var st = (data && data.status) ? String(data.status).toLowerCase() : "ok";
+						var msg = (data && data.message) ? String(data.message) : "";
+						$btn.removeClass("is-loading is-info");
+						if (st === "duplicate") {
+							$btn.addClass("is-warning").text("JÁ EXISTE");
+						} else if (st === "not_karaoke") {
+							$btn.addClass("is-warning").text("NÃO É KARAOKÊ");
+						} else if (st === "invalid_url") {
+							$btn.addClass("is-danger").text("URL INVÁLIDA");
+						} else if (st === "queued" || st === "ok") {
+							$btn.addClass("is-success").text("✓ BAIXANDO");
+						} else {
+							$btn.addClass("is-info").text("PROCESSADO");
+						}
 						setTimeout(function () {
-							$btn.removeClass("is-success").html(originalText)
-								.removeAttr("disabled").css("min-width", "");
-						}, 3000);
+							$btn.removeClass("is-success is-warning is-danger is-info")
+								.html(originalText)
+								.removeAttr("disabled")
+								.css("min-width", "");
+						}, 10000);
 					},
 					error: function () {
-						$btn.removeClass("is-loading").addClass("is-danger")
-							.text("!");
+						$btn.removeClass("is-loading is-info").addClass("is-danger").text("ERRO REDE");
 						setTimeout(function () {
-							$btn.removeClass("is-danger").html(originalText)
-								.removeAttr("disabled").css("min-width", "");
-						}, 3000);
+							$btn.removeClass("is-success is-warning is-danger is-info")
+								.html(originalText)
+								.removeAttr("disabled")
+								.css("min-width", "");
+						}, 10000);
 					},
 				});
 			});

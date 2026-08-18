@@ -30,3 +30,16 @@ _v50_journal_2musicas.py
 *.tmp
 .dbg/
 
+# Scripts de deploy V54+ (temporarios, nao fazem parte do app rodando):
+_atualizar_cookies_dell.py
+_sobe_cookie_ja_extraido.py
+_deploy_*.py
+_diag_*.py
+_pega_json_*.py
+_teste_*.py
+_install_nodejs_*.py
+
+# Arquivos de cookie (NAO PODEM IR PRO GIT, contem sessao do usuario):
+cookies-youtube.txt
+youtube-guest-cookies.txt
+

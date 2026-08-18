@@ -10,7 +10,7 @@ from flask_smorest import Blueprint
 from marshmallow import Schema, fields
 
 from pikaraoke.lib.current_app import get_karaoke_instance, get_site_name
-from pikaraoke.lib.youtube_dl import get_search_results, get_stream_url
+from pikaraoke.lib.youtube_dl import get_search_results, get_stream_url, normalize_youtube_url_to_std
 
 _ = flask_babel.gettext
 
@@ -28,10 +28,10 @@ class PreviewQuery(Schema):
 class DownloadBody(Schema):
     song_url = fields.String(required=True, metadata={"description": "YouTube URL to download"})
     song_added_by = fields.String(
-        required=True, metadata={"description": "Name of the user requesting the download"}
+        load_default="Pikaraoke", metadata={"description": "Name of the user requesting the download"}
     )
     song_title = fields.String(
-        required=True, metadata={"description": "Display title for the song"}
+        load_default="", metadata={"description": "Display title for the song"}
     )
     queue = fields.Boolean(
         load_default=False, metadata={"description": "Whether to queue the song after download"}
@@ -93,14 +93,45 @@ def preview(query):
 @search_bp.route("/download", methods=["POST"])
 @search_bp.arguments(DownloadBody, location="json")
 def download(form):
-    """Download a video from YouTube."""
+    """Download a video from YouTube.
+
+    [V52 REGRAS NOVAS USUARIO + HOTFIX URL DUPLICADA]
+    1. Se title foi passado VAZIO -> LINK DIRETO (force_skip_analysis=True).
+    2. SEMPRE normaliza a URL via youtube_dl.normalize_youtube_url_to_std(),
+       para remover bug URL duplicada: watch?v=https://www.youtube.com/watch?v=XXXXXX
+    """
     k = get_karaoke_instance()
-    song = form["song_url"]
-    user = form["song_added_by"]
-    title = form["song_title"]
+    song = str(form.get("song_url") or "").strip()
+    # V52 HOTFIX: NORMALIZA URL ANTES DE QUALQUER COISA. Evita bug URL duplicada.
+    song = normalize_youtube_url_to_std(song) or song
+    user = form.get("song_added_by") or "Pikaraoke"
+    title = str(form.get("song_title") or "").strip()
     queue = form.get("queue", False)
 
-    # Queue the download (processed serially by the download worker)
-    k.download_manager.queue_download(song, queue, user, title)
+    # Detectar LINK DIRETO:
+    _url_norm = song
+    _title_norm = title
+    _is_direct_link = False
+    if not _title_norm:
+        _is_direct_link = True
+    elif _title_norm == _url_norm:
+        _is_direct_link = True
+    elif _title_norm.lower().startswith("https://") or _title_norm.lower().startswith("http://"):
+        _is_direct_link = True
+    elif " " not in _title_norm and len(_title_norm) <= 15:
+        _is_direct_link = True
 
-    return jsonify({"status": "ok"})
+    status, message = k.download_manager.queue_download(
+        song,
+        queue,
+        user,
+        title,
+        force_skip_analysis=_is_direct_link,
+    )
+
+    return jsonify(
+        {
+            "status": status,
+            "message": message,
+        }
+    )

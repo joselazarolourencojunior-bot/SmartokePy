@@ -17,6 +17,7 @@ from pikaraoke.lib.current_app import (
     get_site_name,
     is_admin,
 )
+from pikaraoke.lib.download_manager import DownloadManager
 
 _ = flask_babel.gettext
 
@@ -308,78 +309,25 @@ def enqueue_form(form):
 def get_current_downloads():
     """Get the status of current and pending downloads.
 
-    GARANTIA PT-BR TOTAL: qualquer mensagem de erro que chegar aqui seja em INGLES cru
-    (ex: "Already exists in library" antigo, "corrupted file", "video restricted" etc.)
-    passa pelo tradutor do DownloadManager antes de retornar JSON para o frontend.
-    Se por algum motivo a instancia do manager nao tiver o metodo, usamos mapa inline fallback.
+    [V58 CORRECAO CRITICA] TRADUTOR UNICO: usa SEMPRE o DownloadManager.classificar_mensagem_erro
+    (a mesma funcao que salva os erros no array) com todas as 9 categorias NOVAS, regras
+    separadas para 403 generico vs 429 rate limit, BOT/CAPTCHA, JS runtime, etc.
+    ANTES: usava _translate_error_to_ptbr (funcao REMOVIDA na V53 → sempre None) → caia em
+    fallback MAP ANTIGO na mesma funcao que juntava HTTP 403+429 tudo como "excesso de downloads"
+    → MENSAGEM 100% ERRADA.
     """
     k = get_karaoke_instance()
     status = k.download_manager.get_downloads_status()
     errors = status.get("errors") or []
-    # Tenta usar o tradutor nativo da classe
-    translate_fn = None
-    try:
-        translate_fn = getattr(k.download_manager, "_translate_error_to_ptbr", None)
-    except Exception:
-        translate_fn = None
-    # Fallback map (caso a instancia antiga nao tenha metodo carregado ainda por cache)
-    PTBR_FALLBACK_MAP: list[tuple[tuple[str, ...], str]] = [
-        (("already exists in library",),
-         "Música já existia na biblioteca local (não precisa baixar de novo)"),
-        (("does not look like karaoke", "rejected non-karaoke", "rejected because title does not look like karaoke"),
-         "Esta música NÃO É KARAOKÊ (o título ou canal não indica versão karaokê — use busca karaokê ou adicione '[Karaoke]' no nome se tiver certeza)"),
-        (("corrupted or invalid file removed", "integrity check", "failed integrity check"),
-         "Arquivo corrompido ou inválido (download quebrou no meio e foi apagado automaticamente — tente baixar de novo)"),
-        (("saved file could not be found", "download finished but the saved file could not be found",
-          "could not find downloaded song", "could not be located"),
-         "Download terminou mas o arquivo salvo NÃO FOI ENCONTRADO na pasta das músicas (disco cheio ou caminho inválido)"),
-        (("download timed out and was cancelled", "stalled for more than", "yt-dlp stalled"),
-         "Download PAROU no meio (timeout) — internet caiu ou travou. Tente novamente mais tarde"),
-        (("video unavailable", "private video", "this video is private", "sign in to confirm your age",
-          "not available in your country", "members-only", "copyright", "restricted", "blocked"),
-         "Vídeo BLOQUEADO ou PRIVADO (idade, país, membro do canal, direitos autorais ou o dono retirou)"),
-        (("http error 403", "http error 429", "too many requests", "rate-limited", "denied access"),
-         "YouTube/link limitou seus downloads por excesso (HTTP 403/429). Aguarde 5~10 minutos e tente de novo"),
-        (("timed out", "timeout", "network is unreachable", "temporary failure in name resolution",
-          "connection refused", "connection reset", "no route to host", "network error"),
-         "ERRO DE REDE / INTERNET (wi-fi caiu, DNS ou roteador). Verifique a conexão com a Internet"),
-        (("permission denied", "read-only file system", "no space left on device", "storage error", "disk full"),
-         "ERRO AO SALVAR NO DISCO (disco cheio ou sem permissão de gravação na pasta das músicas)"),
-        (("unsupported url", "unsupported url scheme", "invalid video link", "invalid url"),
-         "Link de vídeo INVÁLIDO ou não suportado (não é link do YouTube ou formato reconhecido)"),
-    ]
-    def _fallback_translate(raw: str) -> str:
-        text = (raw or "").strip()
-        if not text:
-            return "Ocorreu um erro desconhecido durante o download (tente novamente)"
-        low = text.casefold()
-        for tokens, msg in PTBR_FALLBACK_MAP:
-            if any(tok and tok in low for tok in tokens):
-                tail = ""
-                if ":" in text:
-                    tail = text.split(":", 1)[1].strip()
-                if tail and len(tail) <= 240 and tail not in msg:
-                    return msg + ": " + tail
-                return msg
-        return text  # nao bateu nenhuma regra, volta original (frontend ainda tem fallback 2)
-
     for err in errors:
-        raw_msg = str(err.get("error") or "")
-        tail_original = ""
-        if ":" in raw_msg:
-            tail_original = raw_msg.split(":", 1)[1].strip()
+        raw_msg = str(err.get("error") or "").strip()
         translated = raw_msg
         try:
-            if translate_fn is not None:
-                translated = translate_fn(raw_msg, existing_name=(tail_original or None)) or raw_msg
-            else:
-                translated = _fallback_translate(raw_msg) or raw_msg
+            # Usa sempre o classificar_mensagem_erro (backend unico, correto)
+            translated = DownloadManager.classificar_mensagem_erro(raw_msg) or raw_msg
         except Exception:
-            try:
-                translated = _fallback_translate(raw_msg) or raw_msg
-            except Exception:
-                translated = raw_msg
-        # Nunca retorna mensagem vazia
+            # Qualquer problema → volta a mensagem original (frontend tem seu proprio fallback)
+            translated = raw_msg
         if not translated:
             translated = raw_msg or "Ocorreu um erro desconhecido durante o download"
         err["error"] = translated
