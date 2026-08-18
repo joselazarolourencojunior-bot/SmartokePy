@@ -39,6 +39,8 @@
 		align-items: stretch;
 		gap: 0.75rem;
 		padding: 0.75rem;
+		/* V70: evita overflow de texto / sobreposicao em telas estreitas */
+		flex-wrap: wrap;
 	}
 	ul.search_result_items li:nth-child(odd) {
 		background-color: rgb(50, 55, 55);
@@ -46,11 +48,12 @@
 	@media screen and (min-width: 768px) {
 		ul.search_result_items li {
 			flex-direction: row;
-			align-items: center;
+			align-items: flex-start;  /* V70: top align evita botao ficar centralizado vertical */
+			gap: 1rem;
 		}
 	}
 
-	/* Thumbnail: full width on mobile, fixed 200px on desktop */
+	/* Thumbnail: full width on mobile, fixed 180px on desktop (reduzido V70 para caber na coluna esquerda) */
 	#search-results .img-wrapper {
 		position: relative;
 		cursor: pointer;
@@ -59,7 +62,8 @@
 	}
 	@media screen and (min-width: 768px) {
 		#search-results .img-wrapper {
-			width: 200px;
+			width: 180px;  /* V70: reduziu de 200 -> 180px, ganhou espaco texto */
+			flex-shrink: 0;
 		}
 	}
 	#search-results .img-frame {
@@ -75,21 +79,58 @@
 		transition: opacity 0.3s ease;
 	}
 
-	/* Meta: title fills space, button pinned right */
+	/* Meta: title fills space, button pinned right (V70: coluna, nunca sobrepoe texto!) */
 	.search_result_items_meta {
 		display: flex;
-		align-items: center;
-		gap: 1rem;
-		flex: 1;
+		flex-direction: column;  /* V70: MUDOU DE ROW -> COLUMN: texto + botao NA MESMA COLUNA */
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 0.5rem;
+		flex: 1 1 auto;
 		min-width: 0;
 		text-align: left;
 	}
 	.search_result_items_meta > div:first-child {
-		flex: 1;
+		flex: 1 1 auto;
+		width: 100%;
 		min-width: 0;
+		overflow-wrap: anywhere;  /* V70: quebra linha em qualquer char se titulo gigante */
+		word-break: break-word;
 	}
 	.search_result_items_download {
-		flex-shrink: 0;
+		flex: 0 0 auto;
+		align-self: flex-end;  /* V70: botao DOWNLOAD sempre ALINHADO DIREITA ABAIXO do titulo/canal. NUNCA SOBREPOE. */
+		width: 100%;
+		max-width: 240px;
+		margin-top: 0.25rem;
+	}
+	@media screen and (min-width: 768px) {
+		.search_result_items_download {
+			width: auto;  /* desktop: botao largura natural */
+			min-width: 140px;
+		}
+	}
+
+	/* V70: titulo do video nao fica 1 linha enorme (max 2 linhas + reticencias) */
+	.search_result_items_meta > div:first-child > div:first-child {
+		font-size: 1rem !important;
+		line-height: 1.25;
+		font-weight: 600;
+		color: #f5f5f5;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		margin-bottom: 4px;
+	}
+
+	/* V70: corrigir os tamanhos do canal e link YouTube (is-size-7 mas sem sobrepor) */
+	.search_result_items_meta > div:first-child .is-size-7 {
+		font-size: 0.8rem !important;
+		line-height: 1.4;
+		display: block;
+		margin: 2px 0;
 	}
 
 	#search-results .img-wrapper:hover img {
@@ -221,7 +262,7 @@
 	@media (min-width: 1100px) {
 		.v69-grid-2col {
 			display: grid !important;
-			grid-template-columns: minmax(0, 1.4fr) minmax(380px, 480px);
+			grid-template-columns: minmax(520px, 1.15fr) minmax(400px, 480px);  /* V70: min 520px na coluna esquerda cards */
 			gap: 1.25rem;
 			align-items: start;
 		}
