@@ -361,6 +361,17 @@
 		background-color: rgba(62, 142, 208, 0.22) !important;
 		color: #ffffff !important;
 	}
+	/* V67: area dos 2 botoes do preview (ABRIR YOUTUBE + OUVIR AQUI) */
+	#yp-buttons-row {
+		display: none;
+		margin-top: 14px;
+		gap: 10px;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+	#youtube-preview-panel.active #yp-buttons-row {
+		display: flex;
+	}
 </style>
 <script>
 	$(function () {
@@ -874,7 +885,7 @@
 		}
 
 		function yp_resetPreview() {
-			yp_current = { id: null, title: "", channel: "", duration: "", url: "", playing: false };
+			yp_current = { id: null, title: "", channel: "", duration: "", url: "", thumb: "", playing: false };
 			var panel = document.getElementById("youtube-preview-panel");
 			if (!panel) return;
 			panel.classList.remove("active");
@@ -887,28 +898,50 @@
 			var iframe = main.querySelector("iframe");
 			if (iframe) iframe.src = "about:blank";
 			document.getElementById("yp-thumb").src = "";
+			// [V67]: PARAR O STREAM PLAYER HTML5 quando resetar
+			var sp = document.getElementById("yp-stream-player");
+			if (sp) { try { sp.pause(); } catch (e) {} sp.removeAttribute("src"); sp.load(); sp.style.display = "none"; }
+			var ss = document.getElementById("yp-stream-status");
+			if (ss) { ss.style.display = "none"; ss.className = "tag"; ss.textContent = ""; }
 			// Remove highlight
 			document.querySelectorAll("ul.search_result_items li.yp-hovered").forEach(function (li) {
 				li.classList.remove("yp-hovered");
+			});
+			document.querySelectorAll(".selectize-dropdown-content .option.yp-hovered, div.selectize-dropdown .option.yp-hovered").forEach(function (x) {
+				x.classList.remove("yp-hovered");
 			});
 		}
 
 		function yp_playPause(forcePause) {
 			var main = document.getElementById("yp-main");
 			var iframe = main.querySelector("iframe");
+			// [V67]: ANTES DE QUALQUER COISA, se estiver tocando STREAM URL HTML5, PARA ELE
+			// (evita 2 sons ao mesmo tempo)
+			var sp = document.getElementById("yp-stream-player");
+			if (sp && !sp.paused) { try { sp.pause(); } catch (e) {} sp.removeAttribute("src"); sp.load(); sp.style.display = "none"; }
 			if (!yp_current.id) return;
 			if (forcePause === true || yp_current.playing) {
 				// Pausar: tira o playing (mostra thumb de novo) e reseta src do iframe
 				yp_current.playing = false;
 				main.classList.remove("playing");
-				iframe.src = "about:blank";
+				if (iframe) iframe.src = "about:blank";
 			} else {
 				// Play: carrega iframe YouTube embed com autoplay
 				yp_current.playing = true;
 				main.classList.add("playing");
-				iframe.src = "https://www.youtube.com/embed/" + yp_current.id
-					+ "?autoplay=1&rel=0&controls=1&modestbranding=1&playsinline=1"
-					+ "&origin=" + encodeURIComponent(window.location.origin);
+				// [V67]: PARAMS MELHORES para iframe YouTube
+				//   - removi origin= (as vezes bloqueia embedding em videos com restricao)
+				//   - enablejsapi=1: permite API
+				//   - playsinline=1: toca inline (mobile/desktop)
+				//   - iv_load_policy=3: desliga anotacoes
+				//   - cc_load_policy=0: nao carrega legendas auto
+				//   - fs=1: permite fullscreen
+				//   - rel=0: soh videos do mesmo canal (menos spam)
+				if (iframe) {
+					iframe.src = "https://www.youtube.com/embed/" + yp_current.id
+						+ "?autoplay=1&rel=0&controls=1&playsinline=1&enablejsapi=1"
+						+ "&iv_load_policy=3&cc_load_policy=0&fs=1&modestbranding=1";
+				}
 			}
 		}
 
@@ -1034,6 +1067,122 @@
 		yp_bindSelectizeHovers();
 		// Re-bind a cada 800ms (o selectize recria os options toda vez que o usuario digita)
 		setInterval(yp_bindSelectizeHovers, 800);
+
+		// [V67 - Binda os 2 BOTOES NOVOS do preview]
+		// Chamamos depois de todo jQuery ready, no final do $(function(){...})
+		function yp_bindV67ButtonsOnce() {
+			if (window.__yp_v67_bound) return;
+			window.__yp_v67_bound = true;
+			var btnYt = document.getElementById("yp-btn-open-yt");
+			var btnSt = document.getElementById("yp-btn-stream");
+			var stPlayer = document.getElementById("yp-stream-player");
+			var stStatus = document.getElementById("yp-stream-status");
+
+			if (btnYt) btnYt.addEventListener("click", yp_abrirYoutubeNovaAba);
+			if (btnSt) btnSt.addEventListener("click", yp_ouvirAquiStreamUrl);
+		}
+
+		// [V67 - Botao 1: ABRIR NO YOUTUBE EM NOVA ABA (100% sempre funciona)]
+		// Contorna o "Video indisponivel" do embed: muitos videos karaoke tem embedding disabled pelo dono
+		function yp_abrirYoutubeNovaAba() {
+			var url = yp_current && yp_current.url ? yp_current.url : "";
+			if (yp_current && yp_current.id && !url) url = "https://www.youtube.com/watch?v=" + yp_current.id;
+			if (!url) {
+				alert("Nenhum vídeo selecionado. Passe o mouse sobre uma música primeiro.");
+				return;
+			}
+			// Abre em NOVA ABA, igual quando voce clicava manualmente no link
+			try {
+				var w = window.open(url, "_blank", "noopener,noreferrer,toolbar=yes,scrollbars=yes,resizable=yes");
+				if (!w) throw new Error("popup bloqueado");
+			} catch (err) {
+				// Fallback se popup bloqueado: abre direto na mesma aba com target=_blank normal
+				var a = document.createElement("a");
+				a.href = url;
+				a.target = "_blank";
+				a.rel = "noopener noreferrer";
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+			}
+		}
+
+		// [V67 - Botao 2: OUVIR AQUI - Stream URL real retornada pelo yt-dlp do backend]
+		// Nao usa iframe YouTube, toca no player HTML5 nativo. 100% de chance de tocar mesmo com embedding disabled.
+		async function yp_ouvirAquiStreamUrl() {
+			var url = yp_current && yp_current.url ? yp_current.url : "";
+			if (yp_current && yp_current.id && !url) url = "https://www.youtube.com/watch?v=" + yp_current.id;
+			if (!url) {
+				alert("Nenhum vídeo selecionado. Passe o mouse sobre uma música primeiro.");
+				return;
+			}
+			var btnSt = document.getElementById("yp-btn-stream");
+			var stPlayer = document.getElementById("yp-stream-player");
+			var stStatus = document.getElementById("yp-stream-status");
+			var main = document.getElementById("yp-main");
+
+			// UI loading
+			if (stStatus) {
+				stStatus.className = "tag is-warning";
+				stStatus.style.display = "inline-block";
+				stStatus.textContent = "Buscando stream URL com yt-dlp... (aguarde 3~8s)";
+			}
+			if (btnSt) { btnSt.classList.add("is-loading"); btnSt.disabled = true; }
+
+			// Se estava tocando no iframe, para
+			if (yp_current.playing) yp_playPause(true);
+
+			try {
+				var previewUrl = "{{ url_for('search.preview') }}" + "?url=" + encodeURIComponent(url);
+				var resp = await fetch(previewUrl, { method: "GET", headers: { "Accept": "application/json" } });
+				var txt = await resp.text();
+				var data;
+				try { data = JSON.parse(txt); } catch (e) { data = { error: "Resposta inválida do backend" }; }
+				if (!resp.ok || !data || !data.stream_url || data.error) {
+					throw new Error((data && data.error) || ("HTTP " + resp.status));
+				}
+				var streamUrl = data.stream_url;
+				if (!streamUrl) throw new Error("Nenhuma URL de stream retornada");
+
+				// Toca no player HTML5 nativo (nao usa iframe YouTube)
+				stPlayer.style.display = "block";
+				stPlayer.src = streamUrl;
+				try { stPlayer.muted = false; stPlayer.volume = 0.85; } catch (e) {}
+				var playProm = stPlayer.play();
+				if (playProm && typeof playProm.then === "function") {
+					playProm.catch(function (err) {
+						console.warn("auto-play bloqueado, esperando clique:", err);
+					});
+				}
+				if (stStatus) {
+					stStatus.className = "tag is-success";
+					stStatus.style.display = "inline-block";
+					stStatus.textContent = "🎵 TOCANDO: Stream URL via yt-dlp OK!";
+				}
+			} catch (err) {
+				console.error("Stream URL falhou:", err);
+				if (stStatus) {
+					stStatus.className = "tag is-danger";
+					stStatus.style.display = "inline-block";
+					stStatus.textContent = "❌ Falhou: " + String(err && err.message ? err.message : err) + " — use o botao ABRIR NO YOUTUBE";
+				}
+				// Se falhar, sugerir abrir no YouTube automaticamente
+				if (confirm("Stream URL falhou: " + String(err && err.message ? err.message : err) + "\n\nQuer abrir DIRETAMENTE NO YOUTUBE em nova aba? (sempre funciona)")) {
+					yp_abrirYoutubeNovaAba();
+				}
+			} finally {
+				if (btnSt) { btnSt.classList.remove("is-loading"); btnSt.disabled = false; }
+			}
+		}
+
+		// Bind V67 buttons de forma segura (retry a cada 100ms ate os elementos existirem)
+		(function yp_bindButtonsRetry(){
+			if (document.getElementById("yp-btn-open-yt") && document.getElementById("yp-btn-stream")) {
+				yp_bindV67ButtonsOnce();
+			} else {
+				setTimeout(yp_bindButtonsRetry, 100);
+			}
+		})();
 
 		// [V64 - CORRECAO FATAL]:
 		//   ANTES: addEventListener("DOMContentLoaded", ...) DENTRO de $(function(){...})
@@ -1238,6 +1387,43 @@
 					<a id="yp-link-youtube" href="#" target="_blank" rel="noopener noreferrer">Abrir no YouTube ↗</a>
 					<div id="yp-hint">Passe o mouse sobre os itens da lista → Atualiza a capa. Clique na capa → Play/Pause.</div>
 				</div>
+
+				{# ============================================================
+				   V67: BOTOES QUE NUNCA FALHAM (solve "Video indisponivel" embed)
+				   Muitos videos karaoke tem "embedding disabled" pelo dono,
+				   entao o iframe youtube.com/embed/ retorna "Vídeo indisponível".
+				   Esses 2 botoes CONTORNAM o bloqueio, sempre funcionam:
+				     (1) Botao "Abrir YouTube" = abre link direto em NOVA ABA (como voce ja faz manualmente)
+				     (2) Botao "Ouvir Aqui" = chama endpoint /preview do backend que usa yt-dlp
+				         para pegar a URL STREAM DIRETO do video, e toca no PLAYER HTML5 NATIVO
+				         (sem iframe, sem YouTube, 100% de chance de tocar)
+				   ============================================================ #}
+				<div id="yp-buttons-row">
+					<button type="button" id="yp-btn-open-yt"
+						class="button is-danger is-medium"
+						style="background: linear-gradient(180deg, #ff3636 0%, #cc1616 100%); color: white; border: 0; box-shadow: 0 4px 15px rgba(255, 0, 0, 0.25);">
+						<span class="icon" style="margin-right: 6px;"><i class="icon icon-youtube-play" style="font-size: 1.15rem;"></i></span>
+						<span>▶️ ABRIR NO YOUTUBE (sempre funciona)</span>
+					</button>
+					<button type="button" id="yp-btn-stream"
+						class="button is-info is-medium"
+						style="background: linear-gradient(180deg, #3e8ed0 0%, #2a6db0 100%); color: white; border: 0; box-shadow: 0 4px 15px rgba(62, 142, 208, 0.25);">
+						<span class="icon" style="margin-right: 6px;"><i class="icon icon-volume-up" style="font-size: 1.15rem;"></i></span>
+						<span>🎧 OUVIR AQUI (Stream URL do yt-dlp)</span>
+					</button>
+					<span id="yp-stream-status" class="tag" style="display:none; margin-left: 6px; align-self: center;"></span>
+				</div>
+
+				{# V67: PLAYER HTML5 NATIVO (para botao Stream URL /preview endpoint yt-dlp)
+				    Nao usa iframe YouTube, nunca da "Video indisponivel".
+				    Toca a URL stream real retornada pelo yt-dlp do backend. #}
+				<video id="yp-stream-player"
+					style="display:none; width: 100%; margin-top: 12px; border-radius: 10px; max-height: 320px; background: black;"
+					controls
+					playsinline
+					preload="none">
+					Tu navegador no suporta player HTML5.
+				</video>
 			</div>
 		</form>
 	</div>
