@@ -1073,6 +1073,14 @@
 		}
 
 		var yp_current = { id: null, title: "", channel: "", duration: "", url: "", thumb: "", playing: false };
+		// [V78 BUG CRITICO DO OVERLAY AMARELO APARECENDO INDEVIDAMENTE]:
+		// Todo yp_playPause(play=true) cria um setTimeout 2800ms para detectar iframe bloqueado.
+		// Se o usuario: (1) clica na capa de video A, (2) ANTES DE 2.8s passa mouse em video B
+		// ou clica em outra coisa -> o setTimeout DO VIDEO ANTERIOR FICA NA PILHA E RODA DEPOIS
+		// aplicando overlay amarelo + opacity 0.1 NO VIDEO NOVO B (BUG!).
+		// SOLUCAO: Guardar o timeoutId aqui, e CANCELAR (clearTimeout) em TODO ponto de
+		// entrada (setPreview, resetPreview, playPause forcePause).
+		var _yp_embedBlockedTimeoutId = null;
 
 		// [V65 - Extrai YouTube ID do nome de arquivo (musicas JA BAIXADAS, autocomplete)]
 		//   Padroes reconhecidos (nosso download salva com ---VIDEOID.ext):
@@ -1106,6 +1114,15 @@
 		function yp_setPreview(data) {
 			var id = (data && data.id) ? data.id : yp_extractId(data && data.url);
 			var thumbOverride = (data && data.thumb) ? data.thumb : "";
+
+			// [V78 BUG OVERLAY AMARELO INDEVIDO - CANCELAR TIMEOUT PENDENTE]:
+			// Sempre que trocar de video ou limpar, mata o setTimeout de detectacao
+			// de iframe bloqueado do video anterior (se existir).
+			if (_yp_embedBlockedTimeoutId) {
+				clearTimeout(_yp_embedBlockedTimeoutId);
+				_yp_embedBlockedTimeoutId = null;
+			}
+
 			if (!id && !thumbOverride) { yp_resetPreview(); return; }
 			yp_current.id = id;
 			yp_current.title = (data && data.title) ? data.title : "";
@@ -1198,6 +1215,12 @@
 		}
 
 		function yp_resetPreview() {
+			// [V78 BUG OVERLAY AMARELO INDEVIDO]: Cancela timeout pendente
+			if (_yp_embedBlockedTimeoutId) {
+				clearTimeout(_yp_embedBlockedTimeoutId);
+				_yp_embedBlockedTimeoutId = null;
+			}
+
 			yp_current = { id: null, title: "", channel: "", duration: "", url: "", thumb: "", playing: false };
 			var panel = document.getElementById("youtube-preview-panel");
 			if (!panel) return;
@@ -1240,12 +1263,13 @@
 		function yp_playPause(forcePause) {
 			var main = document.getElementById("yp-main");
 			var iframe = document.getElementById("yp-iframe");
-			// [V76]: Esconde overlay amarelo + reseta opacidade da thumb
+			// [V76 + V78]: Esconde overlay amarelo + reseta opacidade da thumb
 			var ov = document.getElementById("yp-embed-blocked-overlay");
 			if (ov) ov.style.display = "none";
 			var thumb = document.getElementById("yp-thumb");
 			if (thumb) thumb.style.opacity = "1";
-			// [V67 + V75]: ANTES DE QUALQUER COISA, se estiver tocando STREAM URL HTML5, PARA ELE
+
+			// [V67 + V75 + V78]: ANTES DE QUALQUER COISA, se estiver tocando STREAM URL HTML5, PARA ELE
 			// (evita 2 sons ao mesmo tempo)
 			var sp = document.getElementById("yp-stream-player");
 			if (sp && !sp.paused) {
@@ -1255,8 +1279,14 @@
 				try { sp.classList.remove("show"); sp.style.display = ""; } catch(e) {}
 				main.classList.remove("yp-stream-active");
 			}
+
 			if (!yp_current.id) return;
 			if (forcePause === true || yp_current.playing) {
+				// [V78 BUG OVERLAY AMARELO INDEVIDO]: Cancelar timeout!
+				if (_yp_embedBlockedTimeoutId) {
+					clearTimeout(_yp_embedBlockedTimeoutId);
+					_yp_embedBlockedTimeoutId = null;
+				}
 				// Pausar: tira o playing (mostra thumb de novo) e reseta src do iframe
 				yp_current.playing = false;
 				main.classList.remove("playing");
@@ -1264,6 +1294,11 @@
 				if (iframe) { iframe.style.display = ""; iframe.src = "about:blank"; }
 			} else {
 				// Play: carrega iframe YouTube embed com autoplay
+				// [V78 BUG OVERLAY AMARELO INDEVIDO]: Se ja existe timeout de play anterior, cancela
+				if (_yp_embedBlockedTimeoutId) {
+					clearTimeout(_yp_embedBlockedTimeoutId);
+					_yp_embedBlockedTimeoutId = null;
+				}
 				yp_current.playing = true;
 				main.classList.add("playing");
 				// [V76]: NÃO FORCE iframe.style.display = "block" inline!
@@ -1283,7 +1318,7 @@
 						+ "?autoplay=1&rel=0&controls=1&playsinline=1&enablejsapi=1"
 						+ "&iv_load_policy=3&cc_load_policy=0&fs=1&modestbranding=1";
 				}
-				// [V75 HOTFIX OVERLAY BLOQUEADO + V76]:
+				// [V75 HOTFIX OVERLAY BLOQUEADO + V76 + V78]:
 				// Muitos videos de karaoke tem embedding desabilitado. O iframe YT
 				// retorna "Video indisponível" mas nao manda NENHUM evento cross-origin
 				// para o nosso script (nao tem como detectar on/off error).
@@ -1291,25 +1326,33 @@
 				// SRC embed (nao ocorreu redirect / erro cross-origin detectavel),
 				// mostra o overlay AMARELO amigavel explicando: use os botoes ABAIXO!
 				var ytIdNow = yp_current.id;
-				setTimeout(function () {
-					// Se o usuario JA mudou de video (nao eh o mesmo id), nao mostra
+				// [V78 BUG CRITICO]: Guardar o ID do timeout para poder cancelar em
+				// yp_setPreview / reset / pause (evita que ele rode em video NOVO!)
+				_yp_embedBlockedTimeoutId = setTimeout(function () {
+					_yp_embedBlockedTimeoutId = null;
+					// [V78 VERIFICACAO DE FERRO 1]: O usuario JA mudou de video?
 					if (!yp_current.id || yp_current.id !== ytIdNow) return;
-					// Se ja nao esta mais playing, nao mostra
+					// [V78 VERIFICACAO DE FERRO 2]: AINDA estamos realmente em modo iframe?
+					//             (se main NAO TEM a classe .playing, usuario NAO clicou
+					//              ou ja pausou. NUNCA mostrar overlay neste caso.)
+					if (!main.classList.contains("playing")) return;
+					// [V78 VERIFICACAO DE FERRO 3]: nao esta playing no JS bool?
 					if (!yp_current.playing) return;
-					// Se o iframe agora esta about:blank (pausou), nao mostra
+					// [V78 VERIFICACAO DE FERRO 4]: iframe about:blank (foi pausado)?
 					if (iframe && iframe.src === "about:blank") return;
-					// Se STREAM PLAYER esta ativo => nao mostra
+					// [V78 VERIFICACAO DE FERRO 5]: STREAM PLAYER (ouvir aqui) esta ativo?
+					//             neste caso o iframe nem importa (stream nao usa iframe)
 					var spNow = document.getElementById("yp-stream-player");
 					if (spNow && spNow.src && spNow.src !== "" && spNow.src !== "about:blank") return;
 					if (main.classList.contains("yp-stream-active")) return;
-					// Tudo indica: iframe carregou mas provavelmente "Video Indisponivel".
-					// Mostra overlay amarelo!
+					// [V78 VERIFICACAO DE FERRO 6]: overlay ja esta sendo exibido?
 					var ovNow = document.getElementById("yp-embed-blocked-overlay");
-					if (ovNow) {
-						ovNow.style.display = "block";
-						// Garante thumb nao atrapalhe o overlay MAS VOLTA PRA 1 DEPOIS (V76 BUG FIX!)
-						try { document.getElementById("yp-thumb").style.opacity = "0.1"; } catch(e){}
-					}
+					if (!ovNow) return;
+					// TUDO VERIFICA PASSOU: iframe bloqueado real, usuario clicou play.
+					ovNow.style.display = "block";
+					// Reduz opacidade da thumb so temporariamente (quando usuario pausar ou
+					// trocar video, o reset ja volta para 1)
+					try { document.getElementById("yp-thumb").style.opacity = "0.1"; } catch(e){}
 				}, 2800);
 			}
 		}

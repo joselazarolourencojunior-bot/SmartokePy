@@ -593,6 +593,22 @@ def get_search_results(query: str, karaoke_only: bool = False) -> list[list[str]
     SEM as palavras extra de karaoke (fallback com resultados gerais para
     nunca deixar a tela vazia).
 
+    [V78 BUG FALLBACK GRAVE "APARECE VIDEOS DE IGREJA / BIBLIA"]:
+       Antes (BUGADO V52 a V77): O fallback RESULTADOS_2 SEMPRE rodava com
+       karaoke_only=False, MESMO se o usuario pediu karaoke_only=True!
+       Entao o filtro `is_likely_karaoke_result()` e as negativas
+       (pastor, igreja, shorts, bible, clipe oficial, etc) ERAO DESLIGADOS
+       no fallback, trazendo TUDO QUE APARECIA (incluindo videos de igreja
+       e historias biblicas, como o da screenshot do usuario!).
+
+       Correcao V78 (definitiva):
+         - Se karaoke_only=False (modo normal): MANTER fallback antigo
+           (busca2 com karaoke_only=False). MODO NORMAL CONTINUA COMO ERA.
+         - Se karaoke_only=True (modo SO KARAOKE, o default!): NAO FAZ
+           FALLBACK NENHUM! Se resultados_1 (filtro karaoke GRAVE) retornar
+           0, retornar [] (lista vazia)! NUNCA MAIS cair em busca SEM filtro
+           e aparecer igreja/biblia/noticia no modo SO KARAOKE!
+
     Returns:
         List of [title, url, video_id, channel, duration] for each result.
         Duration is formatted as M:SS; channel and duration may be empty strings.
@@ -600,6 +616,17 @@ def get_search_results(query: str, karaoke_only: bool = False) -> list[list[str]
     resultados_1 = _do_one_search_pass(query, karaoke_only=karaoke_only)
     if len(resultados_1) > 0:
         return resultados_1
+
+    # [V78 BUG FALLBACK GRAVE KARAOKE]: MODO NORMAL (karaoke_only=False)
+    # PODE usar fallback. MODO SO KARAOKE (karaoke_only=True): NAO PODE!
+    if karaoke_only:
+        logging.info(
+            "[V78 BUSCA] Modo KARAOKE ONLY ativado: resultados_1 = 0. "
+            "RETORNANDO LISTA VAZIA (sem fallback!), para NAO aparecer videos "
+            "de igreja/biblia/noticia no modo SO KARAOKE. query=%r", query
+        )
+        return []
+
     logging.warning(
         "[V52 FALLBACK BUSCA VAZIA] Busca 1 retornou 0 resultados "
         "(query=%r karaoke_only=%r). Refazendo busca SEM palavras extra "
