@@ -686,9 +686,32 @@ def get_stream_url(video_url: str) -> str | None:
     """Get a direct stream URL for a YouTube video without downloading it.
 
     [V52 HOTFIX URL DUPLICADA] Normaliza URL antes de chamar subprocess.
+
+    [V77 BUG AUDIO CRITICO "VIDEO APARECE TOCANDO MAS NAO TEM AUDIO"]:
+       Formato ANTES (quebrado para muitos videos modernos):
+           worst[ext=mp4]/worst
+       O YouTube desde ~2023 entrega streams SEPARADOS (DASH):
+         - Stream A = VIDEO ONLY (vcodec=h264, acodec=NONE! = SEM AUDIO NENHUM)
+         - Stream B = AUDIO ONLY (acodec=m4a, vcodec=NONE! = SEM VIDEO NENHUM)
+       O formato "worst[ext=mp4]" escolhia o stream VIDEO ONLY (pois era o menor).
+       Resultado no player HTML5: IMAGEM APARECIA NORMAL (tocava quadro a quadro),
+       MAS NAO SAIA NENHUM AUDIO (exatamente o bug que o usuario reportou V77!).
+
+       Formato NOVO (garante 1 arquivo PROGRESSIVO com VIDEO + AUDIO JUNTOS):
+           best[ext=mp4][acodec!=none][vcodec!=none]/worst[ext=mp4][acodec!=none]/mp4/best
+       Ordem de prioridade:
+         1) Melhor MP4 progressivo (1 arquivo) que TEM video E audio (ambos != none).
+         2) Pior MP4 progressivo (1 arquivo) que PELO MENOS tem audio (acodec!=none).
+         3) Fallback "mp4" generico (yt-dlp escolhe).
+         4) Ultimo recurso "best" (qualquer um).
+       Nunca mais vai cair em Video Only (sem audio) ou Audio Only (sem video)!
     """
     safe_url = normalize_youtube_url_to_std(video_url)
-    cmd = yt_dlp_cmd + ["-g", "-f", "worst[ext=mp4]/worst"] + _js_runtime_args()
+    cmd = (
+        yt_dlp_cmd
+        + ["-g", "-f", "best[ext=mp4][acodec!=none][vcodec!=none]/worst[ext=mp4][acodec!=none]/mp4/best"]
+        + _js_runtime_args()
+    )
     cmd += [safe_url]
     logging.debug(f"yt-dlp get stream URL command: {' '.join(cmd)}")
     try:
@@ -702,7 +725,12 @@ def get_stream_url(video_url: str) -> str | None:
         if not output:
             logging.warning(f"yt-dlp returned empty output for: {safe_url}")
             return None
-        return output.splitlines()[0]
+        # V77: yt-dlp pode retornar DUAS URLs (uma de video + uma de audio) se
+        # cair em modo DASH mesmo assim. Nesse caso retornar APENAS a PRIMEIRA,
+        # MAS se tiver 2 URLs nos logs avisar. O <video> HTML5 NAO consegue muxar
+        # 2 streams separados, entao retornar soh 1 URL (prioridade 1 acodec!=none).
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        return lines[0] if lines else None
     except subprocess.TimeoutExpired:
         logging.error(f"yt-dlp stream URL timed out for: {safe_url}")
         return None

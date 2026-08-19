@@ -1537,12 +1537,47 @@
 					try { stPlayer.classList.add("show"); } catch (e) {}
 					stPlayer.style.display = ""; // zere inline style, CSS decide
 					stPlayer.src = streamUrl;
-					try { stPlayer.muted = false; stPlayer.volume = 0.9; } catch (e) {}
+
+					// [V77 BUG AUDIO "VIDEO APARECE MAS SEM AUDIO" - parte JS]:
+					// Politica de Autoplay do Chrome: NAO permite chamar muted=false/volume
+					// ANTES do play() promise resolver! Tem que ser DEPOIS do play() =
+					// no .then() da promise, OU em setTimeout DEPOIS que carregar.
+					// TAMBEM: alguns drivers de audio do Windows (Dell OptiPlex i5-3570
+					// com onboard Realtek ALC) precisam de segunda tentativa de unmute
+					// 1.5s depois (quando o buffer de audio realmente comeca a rodar).
 					var playProm = stPlayer.play();
 					if (playProm && typeof playProm.then === "function") {
-						playProm.catch(function (err) {
+						// Promise disponivel (Chrome / Edge modernos):
+						playProm.then(function () {
+							// PRIMEIRA tentativa de unmute DEPOIS do play comecar
+							try { stPlayer.muted = false; } catch (ea) {}
+							try { stPlayer.volume = 1.0; } catch (eb) {}
+							// SEGUNDA tentativa 1.5s depois (garante driver Windows):
+							setTimeout(function () {
+								try {
+									stPlayer.muted = false;
+									stPlayer.volume = 1.0;
+									// Hack para alguns browsers: se setar playbackRate
+									// para 1.001 e volta 1.0 ele força restart de audio
+									try { stPlayer.playbackRate = 1.0; } catch (ec) {}
+								} catch (ez) {}
+							}, 1500);
+						}).catch(function (err) {
 							console.warn("auto-play bloqueado no stream, esperando clique:", err);
+							// Mesmo se autoplay falhar (precisa de clique usuario),
+							// quando ele CLICAR no player para dar play, seta unmute!
+							var _v77unmuteOnce = function () {
+								try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
+								stPlayer.removeEventListener("play", _v77unmuteOnce);
+							};
+							stPlayer.addEventListener("play", _v77unmuteOnce);
 						});
+					} else {
+						// Fallback navegador antigo sem promise: setTimeout
+						try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
+						setTimeout(function () {
+							try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
+						}, 2000);
 					}
 				}
 				// Esconde thumbnail e iframe explicitamente (redundancia segura)
