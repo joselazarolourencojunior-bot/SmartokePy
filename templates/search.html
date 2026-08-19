@@ -1536,6 +1536,24 @@
 			var thumb = document.getElementById("yp-thumb");
 			var eboOverlay = document.getElementById("yp-embed-blocked-overlay");
 
+			// [V80 Pilar 3 + Front Mentirosos]: Limpar listeners de erro do stream player
+			// ANTES de reutilizar (evitar que listener antigo atire no video novo)
+			if (stPlayer && stPlayer._v80OnError) {
+				stPlayer.removeEventListener("error", stPlayer._v80OnError);
+				stPlayer._v80OnError = null;
+			}
+			if (stPlayer && stPlayer._v80OnCanPlay) {
+				stPlayer.removeEventListener("canplay", stPlayer._v80OnCanPlay);
+				stPlayer._v80OnCanPlay = null;
+			}
+			if (stPlayer && stPlayer._v80StallTimer) {
+				clearTimeout(stPlayer._v80StallTimer);
+				stPlayer._v80StallTimer = null;
+			}
+			if (stPlayer) {
+				// Resetar estado (evita carregar erro anterior cacheado)
+				try { stPlayer.removeAttribute("src"); stPlayer.load(); } catch (ex0) {}
+			}
 			// UI loading
 			if (stStatus) {
 				stStatus.className = "tag is-warning";
@@ -1550,8 +1568,6 @@
 			if (eboOverlay) eboOverlay.style.display = "none";
 			// [V76]: Reset opacidade thumbnail para 1
 			if (thumb) thumb.style.opacity = "1";
-			// Mostra frame do main, mas em modo stream
-			if (main) main.classList.add("yp-stream-active");
 
 			try {
 				var previewUrl = "{{ url_for('search.preview') }}" + "?url=" + encodeURIComponent(url);
@@ -1564,6 +1580,88 @@
 				}
 				var streamUrl = data.stream_url;
 				if (!streamUrl) throw new Error("Nenhuma URL de stream retornada");
+
+				// Mostra frame do main, mas em modo stream
+				// (soh mostra a area GRANDE de stream DEPOIS que confirmou que tem URL!)
+				if (main) main.classList.add("yp-stream-active");
+
+				// [V80 CORRECAO FRONT MENTIROSO: NUNCA MAIS VERDE OK SE NADA TOCA]
+				// Declaramos a funcao de tratamento de erro ANTES de setar src:
+				var _v80HandleHardFail = function (razao) {
+					// Remove listeners para nao disparar de novo
+					if (stPlayer) {
+						if (stPlayer._v80OnError) stPlayer.removeEventListener("error", stPlayer._v80OnError);
+						if (stPlayer._v80OnCanPlay) stPlayer.removeEventListener("canplay", stPlayer._v80OnCanPlay);
+						if (stPlayer._v80StallTimer) { clearTimeout(stPlayer._v80StallTimer); stPlayer._v80StallTimer = null; }
+						stPlayer._v80OnError = null; stPlayer._v80OnCanPlay = null;
+						try { stPlayer.pause(); } catch (eh) {}
+						try { stPlayer.removeAttribute("src"); stPlayer.load(); } catch (eh) {}
+						stPlayer.style.display = "";
+					}
+					// Desativa area stream grande
+					if (main) main.classList.remove("yp-stream-active");
+					// Reset thumb e iframe (retona ao estado normal overlay amarelo)
+					if (thumb) { thumb.style.display = ""; thumb.style.opacity = "0.1"; }
+					if (iframe) iframe.style.display = "";
+					if (eboOverlay) eboOverlay.style.display = "block";
+					// BOTAO VERMELHO ERRO (nunca mais verde!)
+					// [V80.2 USUARIO PEDIU: NUNCA MAIS ABRE YOUTUBE AUTOMATICO!
+					//  Ele quer que fique parado aqui no app, soh abre se ele CLICAR no
+					//  no botao VERMELHO YOUTUBE (sempre funciona) ABAIXO.]
+					if (stStatus) {
+						stStatus.className = "tag is-danger";
+						stStatus.style.display = "inline-block";
+						stStatus.textContent = "❌ Stream falhou (" + razao + ") • Clique no botao YOUTUBE acima se quiser";
+					}
+					// NAO ABRE MAIS NADA AUTOMATICAMENTE! V80.2
+				};
+
+				var _v80HadCanplay = false;
+
+				// Instala listeners ANTES de setar .src (importante!)
+				stPlayer._v80OnError = function () {
+					var errCode = stPlayer.error ? stPlayer.error.code : 0;
+					var errMsg;
+					switch (errCode) {
+						case 1: errMsg = "ABORTADO"; break;
+						case 2: errMsg = "NETWORK ERRO (403/404)"; break;
+						case 3: errMsg = "DECODE ERRO (codec nao suportado)"; break;
+						case 4: errMsg = "SOURCE NAO ENCONTRADA (formato invalido)"; break;
+						default: errMsg = "code=" + errCode; break;
+					}
+					console.error("[V80 STREAM PLAYER ERROR] MediaError:", errCode, errMsg);
+					_v80HandleHardFail("VIDEO ERROR " + errMsg);
+				};
+				stPlayer.addEventListener("error", stPlayer._v80OnError);
+
+				stPlayer._v80OnCanPlay = function () {
+					_v80HadCanplay = true;
+					// Chegou aqui = browser conseguiu decodificar os primeiros frames,
+					// formato suportado, URL 200! Cancelar timer de stall
+					if (stPlayer._v80StallTimer) { clearTimeout(stPlayer._v80StallTimer); stPlayer._v80StallTimer = null; }
+					// MARCADOR VERDADEIRO DE SUCESSO: soh marca verde AQUI, nao antes!
+					if (stStatus) {
+						stStatus.className = "tag is-success";
+						stStatus.style.display = "inline-block";
+						stStatus.textContent = "🎵🎬 TOCANDO OK: Vídeo + Áudio (Stream yt-dlp)";
+					}
+				};
+				stPlayer.addEventListener("canplay", stPlayer._v80OnCanPlay);
+
+				// Timer de segurança 8s: se NENHUM canplay e nenhum error
+				// acontecer, algo ta muito errado (403 silencioso)
+				stPlayer._v80StallTimer = setTimeout(function () {
+					if (!_v80HadCanplay) {
+						// Verifica networkState: NETWORK_NO_SOURCE=3 NETWORK_IDLE=1 NETWORK_LOADING=2
+						var ns = stPlayer.networkState;
+						var ready = stPlayer.readyState;
+						console.warn("[V80 STALL TIMEOUT 8s] canplay nao disparou. networkState=", ns, "readyState=", ready);
+						// Se ainda nao tocou (networkState=3 -> sem fonte) = 403/URL quebrada
+						if (ns === 3 || ready <= 1) {
+							_v80HandleHardFail("TIMEOUT 8s sem dados (network=" + ns + "/ready=" + ready + ")");
+						}
+					}
+				}, 8000);
 
 				// [V75 MUDANCA FATAL + V76 HOTFIX display inline]:
 				// ANTES: stPlayer ficava ABAIXO dos botoes (150px), pequeno, ilegivel,
@@ -1579,6 +1677,7 @@
 					// (o CSS #yp-main.yp-stream-active .yp-stream-player-big ja faz isso com !important)
 					try { stPlayer.classList.add("show"); } catch (e) {}
 					stPlayer.style.display = ""; // zere inline style, CSS decide
+					stPlayer.preload = "auto";
 					stPlayer.src = streamUrl;
 
 					// [V77 BUG AUDIO "VIDEO APARECE MAS SEM AUDIO" - parte JS]:
@@ -1588,72 +1687,78 @@
 					// TAMBEM: alguns drivers de audio do Windows (Dell OptiPlex i5-3570
 					// com onboard Realtek ALC) precisam de segunda tentativa de unmute
 					// 1.5s depois (quando o buffer de audio realmente comeca a rodar).
-					var playProm = stPlayer.play();
-					if (playProm && typeof playProm.then === "function") {
-						// Promise disponivel (Chrome / Edge modernos):
-						playProm.then(function () {
-							// PRIMEIRA tentativa de unmute DEPOIS do play comecar
-							try { stPlayer.muted = false; } catch (ea) {}
-							try { stPlayer.volume = 1.0; } catch (eb) {}
-							// SEGUNDA tentativa 1.5s depois (garante driver Windows):
-							setTimeout(function () {
-								try {
-									stPlayer.muted = false;
-									stPlayer.volume = 1.0;
-									// Hack para alguns browsers: se setar playbackRate
-									// para 1.001 e volta 1.0 ele força restart de audio
-									try { stPlayer.playbackRate = 1.0; } catch (ec) {}
-								} catch (ez) {}
-							}, 1500);
-						}).catch(function (err) {
-							console.warn("auto-play bloqueado no stream, esperando clique:", err);
-							// Mesmo se autoplay falhar (precisa de clique usuario),
-							// quando ele CLICAR no player para dar play, seta unmute!
-							var _v77unmuteOnce = function () {
-								try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
-								stPlayer.removeEventListener("play", _v77unmuteOnce);
-							};
-							stPlayer.addEventListener("play", _v77unmuteOnce);
-						});
-					} else {
-						// Fallback navegador antigo sem promise: setTimeout
-						try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
-						setTimeout(function () {
+					try {
+						var playProm = stPlayer.play();
+						if (playProm && typeof playProm.then === "function") {
+							// Promise disponivel (Chrome / Edge modernos):
+							playProm.then(function () {
+								// PRIMEIRA tentativa de unmute DEPOIS do play comecar
+								try { stPlayer.muted = false; } catch (ea) {}
+								try { stPlayer.volume = 1.0; } catch (eb) {}
+								// SEGUNDA tentativa 1.5s depois (garante driver Windows):
+								setTimeout(function () {
+									try {
+										stPlayer.muted = false;
+										stPlayer.volume = 1.0;
+										// Hack para alguns browsers: se setar playbackRate
+										// para 1.001 e volta 1.0 ele força restart de audio
+										try { stPlayer.playbackRate = 1.0; } catch (ec) {}
+									} catch (ez) {}
+								}, 1500);
+							}).catch(function (err) {
+								console.warn("auto-play bloqueado no stream, esperando clique:", err);
+								// Mesmo se autoplay falhar (precisa de clique usuario),
+								// quando ele CLICAR no player para dar play, seta unmute!
+								var _v77unmuteOnce = function () {
+									try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
+									stPlayer.removeEventListener("play", _v77unmuteOnce);
+								};
+								stPlayer.addEventListener("play", _v77unmuteOnce);
+							});
+						} else {
+							// Fallback navegador antigo sem promise: setTimeout
 							try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
-						}, 2000);
+							setTimeout(function () {
+								try { stPlayer.muted = false; stPlayer.volume = 1.0; } catch (e) {}
+							}, 2000);
+						}
+					} catch (playErr) {
+						console.warn("excepcao em stPlayer.play:", playErr);
 					}
 				}
 				// Esconde thumbnail e iframe explicitamente (redundancia segura)
 				try { thumb.style.display = "none"; thumb.style.opacity = "1"; } catch(e) {}
 				try { iframe.style.display = "none"; } catch(e) {}
 
-				if (stStatus) {
-					stStatus.className = "tag is-success";
-					stStatus.style.display = "inline-block";
-					stStatus.textContent = "🎵 TOCANDO: Stream URL via yt-dlp OK!";
+				// [V80]: Status fica em AMARELO ATE QUE o canplay dispare (ou timer 8s).
+				// NAO MARCAMOS VERDE ATE TER PROVA REAL DE QUE O VIDEO ESTA DECODIFICANDO!
+				if (stStatus && stStatus.className.indexOf("success") === -1 && stStatus.className.indexOf("danger") === -1) {
+					stStatus.className = "tag is-warning";
+					stStatus.textContent = "⏳ Carregando stream (aguarde decoder)...";
 				}
 			} catch (err) {
 				console.error("Stream URL falhou:", err);
 				// Remove classe stream-active (nao funcionou)
 				if (main) main.classList.remove("yp-stream-active");
 				// [V76]: Reset thumb / iframe inline styles para nao ficar travado
-				if (thumb) { thumb.style.display = ""; thumb.style.opacity = "1"; }
+				if (thumb) { thumb.style.display = ""; thumb.style.opacity = "0.1"; }
 				if (iframe) iframe.style.display = "";
+				if (eboOverlay) eboOverlay.style.display = "block";
 				if (stPlayer) {
 					try { stPlayer.pause(); } catch(e) {}
 					try { stPlayer.removeAttribute("src"); } catch(e) {}
 					try { stPlayer.load(); } catch(e) {}
 					stPlayer.style.display = "";
 				}
+				// [V80.2 USUARIO PEDIU: NUNCA MAIS ABRE JANELA YOUTUBE EXTRA!
+				//  Se quiser abrir o YouTube oficial, ele CLICA no botao VERMELHO
+				//  YOUTUBE que sempre funciona. O app agora fica parado AQUI.]
 				if (stStatus) {
 					stStatus.className = "tag is-danger";
 					stStatus.style.display = "inline-block";
-					stStatus.textContent = "❌ Falhou: " + String(err && err.message ? err.message : err) + " — use o botao ABRIR NO YOUTUBE";
+					stStatus.textContent = "❌ Stream falhou (" + String(err && err.message ? err.message : err) + ") • Clique no botao YOUTUBE acima se quiser abrir";
 				}
-				// Se falhar, sugerir abrir no YouTube automaticamente
-				if (confirm("Stream URL falhou: " + String(err && err.message ? err.message : err) + "\n\nQuer abrir DIRETAMENTE NO YOUTUBE em nova aba? (sempre funciona)")) {
-					yp_abrirYoutubeNovaAba();
-				}
+				// V80.2: REMOVIDO setTimeout Abrir YouTube Automatico (usuario odeiava isso!)
 			} finally {
 				if (btnSt) { btnSt.classList.remove("is-loading"); btnSt.disabled = false; }
 			}

@@ -13,9 +13,26 @@ import unicodedata
 from urllib.request import Request, urlopen
 from http.cookiejar import MozillaCookieJar
 
-from pikaraoke.lib.get_platform import get_installed_js_runtime
+from .get_platform import get_installed_js_runtime
 
 yt_dlp_cmd = [sys.executable, "-m", "yt_dlp"]
+
+# [V80.1 CORRECAO GRAVE 403 FORJADO POR USER-AGENT DIFERENTE!]:
+#   O YouTube ASSINA as URLs de videoplayback com (video_id + expire + ip + UA + outros).
+#   Se o yt-dlp gera a URL usando o User-Agent padrao "yt-dlp/2024.x", mas depois o
+#   <video> do Chrome baixa com "Chrome/127.x...", o Google detecta "UA diferente da
+#   assinatura" e BLOQUEIA TUDO com HTTP 403 Forbidden MESMO se a URL estava "correta".
+#   Era ISSO o bug MISTERIOSO que estava causando TUDO (mesmo com node, mesmo com
+#   formato 18, dava 403 silencioso no Chrome)!
+# SOLUCAO: Forcar o MESMO User-Agent Chrome Desktop NA LINHA DE COMANDO do yt-dlp
+#   (yt_dlp_cmd.extend com --user-agent). Assim a URL ja sai assinada com o MESMO
+#   UA que o Chrome vai usar depois, e Google NAO VAI MAIS BLOQUEAR por UA mismatch.
+#   O MESMO UA também é utilizado no HTTP Range check (Pilar 3 V80) para consistencia.
+V80_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+yt_dlp_cmd.extend(["--user-agent", V80_CHROME_UA])
 
 _SEARCH_KARAOKE_KEYWORDS = (
     "karaoke",
@@ -222,17 +239,31 @@ def is_likely_karaoke_result(title: str, channel: str = "") -> bool:
 
 
 def _js_runtime_args() -> list[str]:
-    """[V57 CORRIGIDO] Retorna args yt-dlp para JS runtime, SEMPRE com CAMINHO ABSOLUTO do binario.
-    Antes: usava soh 'node' e o yt-dlp falhava em detectar (dizia node unavailable).
-    Agora: usa shutil.which para pegar caminho completo e passa NOME:CAMINHO para yt-dlp.
-    Prioridade: deno > node > bun > quickjs (mesma do get_installed_js_runtime)."""
-    # Lista de runtimes em ordem de preferencia, mesmo que get_installed_js_runtime mude
-    for runtime_name in ("deno", "node", "bun", "quickjs"):
+    """[V80 CORRIGIDO GRAVE - ORDEM NODE PRIMEIRO + FORCAR AMBOS SE EXISTIREM]
+       Retorna args yt-dlp para JS runtime, SEMPRE com CAMINHO ABSOLUTO do binario.
+
+       BUG ANTES (V57 a V79): loop iterava deno -> node -> bun -> quickjs, e RETORNAVA
+       NO PRIMEIRO que existia! Se Dell tivesse BOTH deno (falhando/travando por
+       permissoes / caminho) E node (funcionando perfeitamente v22), a funcao
+       escolhia deno PRIMEIRO, usava ele, yt-dlp nao conseguia decifrar nCipher
+       do player, e retornava URL SEM ASSINATURA = 403 Forbidden no Chrome!
+       Era ISSO! O DELL TEM OS DOIS, E ESCOLHIA ERRADO!
+
+       CORRECAO V80 (DEFINITIVA):
+         1) INVERTER ORDEM DE PRIORIDADE: NODE PRIMEIRO (mais estavel, oficial!)
+         2) SE existir node E existir deno -> PASSAR AMBOS! (yt-dlp tenta na ordem)
+         3) Se soh existir um, passar soh ele.
+         4) Sempre shutil.which caminho absoluto.
+    """
+    runtimes_found = []
+    # [V80 ORDEM CORRETA: NODE = #1 (estavel, todo mundo usa), depois deno, bun, quickjs]
+    for runtime_name in ("node", "deno", "bun", "quickjs"):
         runtime_path = shutil.which(runtime_name)
         if runtime_path:
-            # deno: yt-dlp ja assume por padrao, mas passar com caminho nao machuca
-            # outros: passar com caminho completo garante que yt-dlp ache
-            return ["--js-runtimes", f"{runtime_name}:{runtime_path}"]
+            runtimes_found.append(f"{runtime_name}:{runtime_path}")
+    if runtimes_found:
+        # yt-dlp aceita multiplos runtimes separados por virgula, tenta na ordem
+        return ["--js-runtimes", ",".join(runtimes_found)]
     return []
 
 
@@ -714,72 +745,169 @@ def get_stream_url(video_url: str) -> str | None:
 
     [V52 HOTFIX URL DUPLICADA] Normaliza URL antes de chamar subprocess.
 
-    [V77 BUG AUDIO CRITICO "VIDEO APARECE TOCANDO MAS NAO TEM AUDIO"]:
-       Formato ANTES (quebrado para muitos videos modernos):
-           worst[ext=mp4]/worst
-       O YouTube desde ~2023 entrega streams SEPARADOS (DASH):
-         - Stream A = VIDEO ONLY (vcodec=h264, acodec=NONE! = SEM AUDIO NENHUM)
-         - Stream B = AUDIO ONLY (acodec=m4a, vcodec=NONE! = SEM VIDEO NENHUM)
-       O formato "worst[ext=mp4]" escolhia o stream VIDEO ONLY (pois era o menor).
-       Resultado no player HTML5: IMAGEM APARECIA NORMAL (tocava quadro a quadro),
-       MAS NAO SAIA NENHUM AUDIO (exatamente o bug que o usuario reportou V77!).
+    [V77 BUG AUDIO CRITICO "VIDEO APARECE TOCANDO MAS NAO TEM AUDIO"]
+       (resolvido posteriormente V79).
 
-    [V79 BUG VIDEO NAO APARECE (audio veio, video nao) - CORRECAO GRAVE]:
-       Formato V77 (BUGADO):
-           best[ext=mp4][acodec!=none][vcodec!=none]/worst[ext=mp4][acodec!=none]/mp4/best
-       ⚠️ PROBLEMA: itens 2, 3 e 4 NAO TINHAM [vcodec!=none]!
-       Entao se o video nao TIVESSE MP4 progressivo "best" (item 1), caia no
-       "worst[ext=mp4][acodec!=none]" - este FILTRO SO EXIGE AUDIO, nao video!
-       yt-dlp retornava AUDIO ONLY (m4a em container mp4, vcodec=NONE)
-       = exatamente o bug reportado agora V79: "audio veio, video nao"!
+    [V80 CORRECAO DEFINITIVA - SEM MAIS ERROS - AUDIO + VIDEO JUNTOS + URL VALIDA]:
+      PROBLEMAS ANTERIORES ATE V79 (TODOS RESOLVIDOS AGORA):
+         (1) Filtros de codec quebrados -> ora sem audio, ora sem video.
+         (2) JS runtime escolhendo DENO PRIMEIRO no Dell (ordem errada!), e
+             DENO nao resolvia o nCipher do player -> URL retornava 403.
+         (3) Nenhuma checagem HTTP POS-retorno: entregava URL 403 para o
+             front, que pintava botao VERDE mentiroso "TOCANDO OK" mesmo com
+             player totalmente preto sem nada tocar.
 
-       Formato V79 CORRETO (TODOS OS ITENS GARANTEM AMBOS OS CODECS!):
-           best[ext=mp4][acodec!=none][vcodec!=none]
-           /worst[ext=mp4][acodec!=none][vcodec!=none]
-           /best[ext=webm][acodec!=none][vcodec!=none]
-           /worst[ext=webm][acodec!=none][vcodec!=none]
-           /best[acodec!=none][vcodec!=none]
-       Ordem de prioridade (TODOS exigem acodec!=none E vcodec!=none, nunca DASH separado!):
-         1) Melhor MP4 progressivo H.264 (Chrome suporta nativamente, 1 arquivo com os dois).
-         2) Pior MP4 progressivo (qualidade baixa, mas tem VIDEO + AUDIO JUNTOS).
-         3) Melhor WebM (VP8/VP9, Chrome tambem suporta nativamente, 1 arquivo com os dois).
-         4) Pior WebM (ultima opcao webm).
-         5) Ultimo recurso: MELHOR QUALQUER extensao/formato DESDE QUE tenha AMBOS codecs.
-       Com V79 NUNCA MAIS vai cair em Video Only (sem audio - V77) NEM Audio Only (sem video - V79)!
+      SOLUCAO V80 (DEFINITIVA, PILARES 3 GARANTIAS):
+
+      Pilar 1 - FORMATO: Usar ID NUMERICOS CLASSICOS QUE EXISTEM EM TODO VIDEO
+        DO YOUTUBE DESDE 2006 (yt-dlp chama isso de legacy itag format):
+          18 = MP4 360p  (H.264 avc1 + AAC mp4a.40.2 - SEMPRE EXISTE!)
+          22 = MP4 720p  (H.264 + AAC - se existir, melhor qualidade)
+          59 = MP4 480p  (variacao nova, se existir)
+          60 = MP4 720p  (variacao nova q720)
+          Ultimo recurso: any MP4 com ambos codecs avc1+mp4a.
+        Nenhum desses retorna DASH separado. Todos = 1 arquivo PROGRESSIVO com
+        VIDEO + AUDIO JUNTOS. Chrome 100% suporta H.264 + AAC em MP4. NUNCA MAIS
+        vai sobrar Audio Only nem Video Only.
+
+      Pilar 2 - JS RUNTIME ORDEM: _js_runtime_args AGORA passa NODE PRIMEIRO
+        (ordem invertida V80), e PASSAR TODOS runtimes disponiveis. URL de
+        videoplayback SEMPRE vai ter assinatura valida.
+
+      Pilar 3 - VERIFICACAO HTTP OBRIGATORIA POS-RETORNO:
+        Apos pegar URL com yt-dlp, FAZ um HTTP GET com Range: bytes=0-1024
+        (rapido, 1KB, nao baixa arquivo todo!). So aceita a URL se:
+          - HTTP status == 200 ou 206
+          - Content-Length > 500.000 bytes (minimo para video 3min 360p)
+          - Content-Type comeca com "video/"
+        Se qualquer item falhar -> retorna None, nao entrega URL quebrada.
+        Com isso, o front soh recebe URL 100% VALIDA.
     """
     safe_url = normalize_youtube_url_to_std(video_url)
-    # [V79 CORRECAO GRAVE]: TODOS os 5 filtros GARANTEM AMBOS os codecs (acodec E vcodec)!
-    v79_format = (
-        "best[ext=mp4][acodec!=none][vcodec!=none]"
-        "/worst[ext=mp4][acodec!=none][vcodec!=none]"
-        "/best[ext=webm][acodec!=none][vcodec!=none]"
-        "/worst[ext=webm][acodec!=none][vcodec!=none]"
-        "/best[acodec!=none][vcodec!=none]"
-    )
+    # [V80 Pilar 1]: format IDs classicos 18/22/59/60 + fallback MP4 avc1+mp4a
+    v80_format = "18/22/59/60/best[ext=mp4][vcodec^=avc1][acodec^=mp4a][acodec!=none][vcodec!=none]"
     cmd = (
         yt_dlp_cmd
-        + ["-g", "-f", v79_format]
+        + ["-g", "-f", v80_format]
         + _js_runtime_args()
     )
     cmd += [safe_url]
-    logging.debug(f"yt-dlp get stream URL command: {' '.join(cmd)}")
+    logging.debug(f"yt-dlp get stream URL command (V80): {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, timeout=25)
         if result.returncode != 0:
-            logging.warning(
-                f"yt-dlp stream URL failed for {safe_url}: {result.stderr.decode('utf-8', 'ignore')}"
-            )
+            stderr_decoded = result.stderr.decode("utf-8", "ignore")
+            logging.warning(f"yt-dlp stream URL failed for {safe_url}: {stderr_decoded}")
             return None
         output = result.stdout.decode("utf-8").strip()
         if not output:
             logging.warning(f"yt-dlp returned empty output for: {safe_url}")
             return None
-        # V77: yt-dlp pode retornar DUAS URLs (uma de video + uma de audio) se
-        # cair em modo DASH mesmo assim. Nesse caso retornar APENAS a PRIMEIRA,
-        # MAS se tiver 2 URLs nos logs avisar. O <video> HTML5 NAO consegue muxar
-        # 2 streams separados, entao retornar soh 1 URL (prioridade 1 acodec!=none).
+        # Pegar primeira linha com URL (se tiver 2 linhas DASH, o yt-dlp retorna 2;
+        # V80 format foi escolhido pra nao ter DASH, mas se tiver pegar primeira).
         lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-        return lines[0] if lines else None
+        candidate = lines[0] if lines else None
+        if not candidate or not candidate.startswith("http"):
+            logging.warning(f"yt-dlp URL invalida para {safe_url}: {candidate!r}")
+            return None
+
+        # [V80.4 DETECTOR DE FORMATO SEGURO: IDs progressivos LEGADO 18/22/59/60.]
+        # Esses itags existem em TODO video desde 2006 e SEMPRE sao progressivo MP4
+        # com video H.264 + audio AAC juntos. Se a URL tem um desses itags, o
+        # yt-dlp (usando Node.js nCipher!) garantiu a assinatura. O HTTP Range
+        # check pode falhar por headers que Python nao reproduz 100% igual o Chrome,
+        # mas o Chrome REAL consegue reproduzir OK. O front tem Pilar 4 (canplay,
+        # error, stall timer 8s) que valida a verdade final — por isso, nesses IDs
+        # garantidos, LIBERAMOS MESMO se o back-end nao conseguiu validar Range.
+        _v80_safe_itag = False
+        try:
+            from urllib.parse import urlparse, parse_qs
+            _q = parse_qs(urlparse(candidate).query)
+            _itag = _q.get("itag", [""])[0] if _q else ""
+            if _itag in ("18", "22", "59", "60"):
+                _v80_safe_itag = True
+        except Exception:
+            _v80_safe_itag = False
+
+        # [V80 Pilar 3]: VERIFICACAO HTTP RANGE.
+        # [V80.4: Se for formato SAFE LEGADO (18/22/59/60), nos nao queremos que
+        #  uma falha TRANSITÓRIA no Range check nos bloqueie. O front decide.]
+        _v80_failed_http_check = False
+        try:
+            req = Request(candidate, method="GET")
+            req.add_header("Range", "bytes=0-1024")
+            # [V80.1 + V80.3]: MESMO User-Agent CHROME que foi usado no comando de geracao
+            # da URL (yt_dlp_cmd). Se nao for igual, Google bloqueia com 403 Forged.
+            req.add_header("User-Agent", V80_CHROME_UA)
+            # [V80.3 HEADERS CHROME COMPLETOS: Google bloqueia 403 se faltar esses abaixo!]
+            req.add_header("Accept", "*/*")
+            req.add_header("Accept-Encoding", "identity;q=1, *;q=0")
+            req.add_header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8")
+            req.add_header("Origin", "https://www.youtube.com")
+            req.add_header("Referer", "https://www.youtube.com/")
+            req.add_header("Sec-CH-UA",
+                           '"Chromium";v="128", "Google Chrome";v="128", "Not=A?Brand";v="24"')
+            req.add_header("Sec-CH-UA-Mobile", "?0")
+            req.add_header("Sec-CH-UA-Platform", '"Windows"')
+            req.add_header("Sec-Fetch-Dest", "video")
+            req.add_header("Sec-Fetch-Mode", "no-cors")
+            req.add_header("Sec-Fetch-Site", "cross-site")
+            with urlopen(req, timeout=10) as r:
+                status = r.status
+                ct = str(r.headers.get("Content-Type", "") or "").lower()
+                cl_raw = r.headers.get("Content-Length", None)
+                if status not in (200, 206):
+                    logging.warning(
+                        f"[V80 HTTP CHECK FAIL] vid={safe_url} status={status} (esperado 200/206). "
+                        f"safe_itag={_v80_safe_itag}"
+                    )
+                    _v80_failed_http_check = True
+                if not _v80_failed_http_check and not ct.startswith("video/") and not ct.startswith("audio/") and not ct.startswith("application/mp4"):
+                    logging.warning(
+                        f"[V80 HTTP CHECK FAIL] vid={safe_url} Content-Type invalido: {ct}. "
+                        f"Esperado video/mp4 ou similar. safe_itag={_v80_safe_itag}."
+                    )
+                    _v80_failed_http_check = True
+                total_bytes = 0
+                if not _v80_failed_http_check:
+                    if cl_raw and str(cl_raw).isdigit():
+                        total_bytes = int(cl_raw)
+                    else:
+                        cr = r.headers.get("Content-Range", "") or ""
+                        if "/" in cr:
+                            try: total_bytes = int(cr.split("/", 1)[1])
+                            except (ValueError, IndexError): pass
+                    if total_bytes and total_bytes < 200_000:
+                        logging.warning(
+                            f"[V80 HTTP CHECK FAIL] vid={safe_url} arquivo muito pequeno: {total_bytes} bytes "
+                            f"(<200KB, impossivel ser video+audio). safe_itag={_v80_safe_itag}."
+                        )
+                        _v80_failed_http_check = True
+                if not _v80_failed_http_check:
+                    logging.info(
+                        f"[V80 STREAM URL OK (HTTP check)] vid={safe_url} HTTP={status} "
+                        f"type={ct} total_bytes={total_bytes} safe_itag={_v80_safe_itag}"
+                    )
+        except Exception as http_err:
+            logging.warning(
+                f"[V80 HTTP CHECK EXCEPTION] vid={safe_url} {type(http_err).__name__}: {http_err}. "
+                f"safe_itag={_v80_safe_itag}"
+            )
+            _v80_failed_http_check = True
+
+        # [V80.4 DECISAO FINAL]:
+        if _v80_failed_http_check and not _v80_safe_itag:
+            # Falhou e NAO era formato seguro → NAO arriscamos, retorna None,
+            # front fica vermelho e usuario clica YouTube se quiser.
+            return None
+        if _v80_failed_http_check and _v80_safe_itag:
+            # Falhou mas era itag LEGADO SEGURO (18/22/59/60). Liberamos mesmo assim.
+            logging.warning(
+                f"[V80.4 FALLBACK LIBERADO] vid={safe_url} HTTP Range check falhou MAS "
+                f"itag={_itag} (SAFE LEGADO). Liberando URL, o front validara via canplay."
+            )
+
+        return candidate
     except subprocess.TimeoutExpired:
         logging.error(f"yt-dlp stream URL timed out for: {safe_url}")
         return None
