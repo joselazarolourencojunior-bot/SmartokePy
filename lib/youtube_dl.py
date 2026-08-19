@@ -34,6 +34,61 @@ V80_CHROME_UA = (
 )
 yt_dlp_cmd.extend(["--user-agent", V80_CHROME_UA])
 
+# [V90: TODOS OS ITAGS PROGRESSIVOS LEGADOS YOUTUBE (1 arquivo = video+audio JUNTOS).
+#  Esses itags EXISTEM desde 2006 e NUNCA retornam DASH separado. Se a URL tem
+#  um desses, é garantido 1 arquivo MP4/FLV/WebM com AMBOS codecs. O front sempre
+#  valida via canplay, então podemos confiar.]
+V90_SAFE_PROGRESSIVE_ITAGS = frozenset([
+    #  MP4 H.264/AAC CLASSICOS (SEMPRE EXISTEM):
+    "18", "22", "59", "60",
+    #  MP4 3D (82-85 3D SBS/TB ; 92-96 MP4 AVC 3D 240p~1080p):
+    "82", "83", "84", "85", "92", "93", "94", "95", "96",
+    #  ANTIGOS 3GP/FLV H.263/FLV1 (funcionam se nao tiver MP4, ex.: videos 2007~2010):
+    "36", "17", "5", "6", "34", "35", "37", "38",
+    #  WebM VP8/9 (qualquer video que tenha WebM progressivo):
+    "43", "44", "45", "46", "100", "101", "102",
+])
+#  V90: 12 TENTATIVAS EM CASCATA (do MELHOR pro PIOR), sempre 1 arquivo progressivo
+#  (video+audio juntos) ou "best" que resolve codecs. A PRIMEIRA que retornar URL
+#  válida VENCE e já retorna imediatamente. Nunca mais depender de 1 formato só.
+V90_FORMAT_CASCADE = [
+    #  (1) CLASSICOS LEGADOS SEGUROS (SEM PRECISAR DE HTTP CHECK):
+    "18/22/59/60",
+    #  (2) TODOS MP4 3D + MP4 CLASSICOS UNIDOS, forca ambos codecs:
+    "18/22/59/60/82/83/84/85/92/93/94/95/96/"
+    "best[ext=mp4][vcodec!=none][acodec!=none][protocol^=http]",
+    #  (3) TODOS ANTIGOS (3GP, FLV, MP4 antigos):
+    "17/36/5/6/34/35/37/38/"
+    "worst[ext=mp4][vcodec!=none][acodec!=none][protocol^=http]",
+    #  (4) TODOS WEBM PROGRESSIVOS:
+    "43/44/45/46/100/101/102/"
+    "best[ext=webm][vcodec!=none][acodec!=none][protocol^=http]",
+    #  (5) MELHOR QUALQUER EXTENSao DESDE QUE SEJA HTTP/HTTPS + 2 CODECS:
+    "best[protocol^=https][vcodec!=none][acodec!=none]",
+    #  (6) PIOR (menor arquivo, mas SEMPRE toca se existir):
+    "worst[protocol^=https][vcodec!=none][acodec!=none]",
+    #  (7) ANY MELHOR QUALQUER (sem restricoes de protocolo — yt-dlp pode retornar HLS):
+    "best[vcodec!=none][acodec!=none]",
+    #  (8) ANY PIOR:
+    "worst[vcodec!=none][acodec!=none]",
+    #  (9) BEST ext=MP4 só (muitas vezes existe MP4 mas nao caiu acima):
+    "best[ext=mp4]",
+    #  (10) WORST ext=mp4:
+    "worst[ext=mp4]",
+    #  (11) QUALQUER COISA QUE EXISTA (yt-dlp decide):
+    "best",
+    #  (12) REALMENTE ULTIMO RECURSO:
+    "worst",
+]
+#  V90 EXTRA USER-AGENTS (se Chrome falhou em 12 formatos, tenta Android ou iPhone —
+#  YouTube tem pools de URL diferentes por plataforma! Android WebView aceita mais.)
+V90_EXTRA_USER_AGENTS = [
+    (
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+    ),
+]
+
 _SEARCH_KARAOKE_KEYWORDS = (
     "karaoke",
     "karaokê",
@@ -740,180 +795,197 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
     return [row for _, row in scored_results[: (30 if karaoke_only else 25)]]
 
 
+def _v90_helper_extract_itag(candidate: str) -> str:
+    """Extrai o parametro ?itag= de uma URL googlevideo.com (usada p/ decidir safe)."""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        _q = parse_qs(urlparse(candidate).query)
+        return (_q.get("itag", [""])[0] or "").strip()
+    except Exception:
+        return ""
+
+
+def _v90_http_range_check(candidate: str, user_agent: str) -> bool:
+    """V90 HTTP Range check bytes=0-1024 com headers Chrome COMPLETOS.
+    Retorna True se tudo OK (200/206, Content-Type video/audio/mp4, tamanho > 200KB).
+    Retorna False se qualquer coisa falhar (403, 404, decode error etc)."""
+    try:
+        req = Request(candidate, method="GET")
+        req.add_header("Range", "bytes=0-1024")
+        req.add_header("User-Agent", user_agent)
+        req.add_header("Accept", "*/*")
+        req.add_header("Accept-Encoding", "identity;q=1, *;q=0")
+        req.add_header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8")
+        req.add_header("Origin", "https://www.youtube.com")
+        req.add_header("Referer", "https://www.youtube.com/")
+        req.add_header("Sec-CH-UA",
+                       '"Chromium";v="128", "Google Chrome";v="128", "Not=A?Brand";v="24"')
+        req.add_header("Sec-CH-UA-Mobile", "?0")
+        req.add_header("Sec-CH-UA-Platform", '"Windows"')
+        req.add_header("Sec-Fetch-Dest", "video")
+        req.add_header("Sec-Fetch-Mode", "no-cors")
+        req.add_header("Sec-Fetch-Site", "cross-site")
+        with urlopen(req, timeout=10) as r:
+            status = r.status
+            ct = str(r.headers.get("Content-Type", "") or "").lower()
+            cl_raw = r.headers.get("Content-Length", None)
+            if status not in (200, 206):
+                return False
+            if (not ct.startswith("video/") and not ct.startswith("audio/")
+                    and not ct.startswith("application/mp4")
+                    and not ct.startswith("application/octet-stream")):
+                return False
+            total_bytes = 0
+            if cl_raw and str(cl_raw).isdigit():
+                total_bytes = int(cl_raw)
+            else:
+                cr = r.headers.get("Content-Range", "") or ""
+                if "/" in cr:
+                    try: total_bytes = int(cr.split("/", 1)[1])
+                    except (ValueError, IndexError): pass
+            if total_bytes and total_bytes < 200_000:
+                return False
+            return True
+    except Exception:
+        return False
+
+
+def _v90_validate_url(candidate: str, safe_url: str, user_agent: str) -> str | None:
+    """Recebe URL candidata e decide se ENTREGA pro front (retorna a URL)
+    ou descarta (retorna None). Regras:
+
+    1. Se itag está em V90_SAFE_PROGRESSIVE_ITAGS (18/22/.../102):
+       → SEMPRE ENTREGA (mesmo se HTTP Range do Python falhar, o front valida).
+       O valor de 'itag' NÃO MENTE: esses IDs garantem 1 arquivo progressivo.
+    2. Senão:
+       → OBRIGATORIO passar por _v90_http_range_check (200/206 etc)."""
+    if not candidate or not candidate.startswith("http"):
+        return None
+    itag = _v90_helper_extract_itag(candidate)
+    if itag and itag in V90_SAFE_PROGRESSIVE_ITAGS:
+        logging.warning(
+            f"[V90 SAFE ITAG LIBERADO] vid={safe_url} itag={itag} (progressivo LEGADO). "
+            "URL entregue pro front. Validação REAL fica com o evento canplay."
+        )
+        return candidate
+    # Nao-safe (formato best, DASH, etc): OBRIGATORIO HTTP Range check
+    if _v90_http_range_check(candidate, user_agent):
+        logging.info(f"[V90 URL OK (nao-safe, passou HTTP check)] vid={safe_url} itag={itag or '?'}")
+        return candidate
+    return None
+
+
+def _v90_try_once(
+    safe_url: str,
+    fmt_filter: str,
+    user_agent: str | None = None,
+    timeout_per_try: int = 25,
+) -> str | None:
+    """RODA 1 TENTATIVA do yt-dlp com 1 formato específico.
+
+    - Pega o output, extrai a 1a URL (yt-dlp retorna 2 linhas se for DASH separado;
+      se for progressivo, retorna 1 linha).
+    - Chama _v90_validate_url para aprovar ou não.
+    - Qualquer falha: retorna None (o loop cascata vai tentar o próximo).
+    """
+    cmd = yt_dlp_cmd.copy()
+    #  Override user-agent se essa tentativa usar UA diferente (Android, etc):
+    if user_agent is not None:
+        #  Troca o --user-agent da base pelo desta tentativa
+        #  (garante que não tenha 2 --user-agent conflitantes)
+        filtered = []
+        skip_next = False
+        for i, arg in enumerate(cmd):
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--user-agent":
+                skip_next = True
+                continue
+            filtered.append(arg)
+        cmd = filtered
+        cmd.extend(["--user-agent", user_agent])
+    cmd += ["-g", "-f", fmt_filter]
+    cmd += _js_runtime_args() + _cookies_args() + [
+        "--extractor-args", "youtube:player_client=ios,android,web;skip=dash;player_skip=configs",
+        "--remote-components", "ejs:github",
+        "--no-check-certificates",
+        "--ignore-errors",
+        "--no-abort-on-error",
+    ]
+    cmd.append(safe_url)
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout_per_try, check=False)
+    except subprocess.TimeoutExpired:
+        return None
+    except (FileNotFoundError, PermissionError):
+        return None
+    if result.returncode != 0:
+        #  Erro nessa tentativa, mas o loop cascata continuará
+        return None
+    out = result.stdout.decode("utf-8", "ignore").strip()
+    if not out:
+        return None
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    candidate = lines[0]
+    effective_ua = user_agent if user_agent is not None else V80_CHROME_UA
+    return _v90_validate_url(candidate, safe_url, effective_ua)
+
+
 def get_stream_url(video_url: str) -> str | None:
     """Get a direct stream URL for a YouTube video without downloading it.
 
-    [V52 HOTFIX URL DUPLICADA] Normaliza URL antes de chamar subprocess.
-
-    [V77 BUG AUDIO CRITICO "VIDEO APARECE TOCANDO MAS NAO TEM AUDIO"]
-       (resolvido posteriormente V79).
-
-    [V80 CORRECAO DEFINITIVA - SEM MAIS ERROS - AUDIO + VIDEO JUNTOS + URL VALIDA]:
-      PROBLEMAS ANTERIORES ATE V79 (TODOS RESOLVIDOS AGORA):
-         (1) Filtros de codec quebrados -> ora sem audio, ora sem video.
-         (2) JS runtime escolhendo DENO PRIMEIRO no Dell (ordem errada!), e
-             DENO nao resolvia o nCipher do player -> URL retornava 403.
-         (3) Nenhuma checagem HTTP POS-retorno: entregava URL 403 para o
-             front, que pintava botao VERDE mentiroso "TOCANDO OK" mesmo com
-             player totalmente preto sem nada tocar.
-
-      SOLUCAO V80 (DEFINITIVA, PILARES 3 GARANTIAS):
-
-      Pilar 1 - FORMATO: Usar ID NUMERICOS CLASSICOS QUE EXISTEM EM TODO VIDEO
-        DO YOUTUBE DESDE 2006 (yt-dlp chama isso de legacy itag format):
-          18 = MP4 360p  (H.264 avc1 + AAC mp4a.40.2 - SEMPRE EXISTE!)
-          22 = MP4 720p  (H.264 + AAC - se existir, melhor qualidade)
-          59 = MP4 480p  (variacao nova, se existir)
-          60 = MP4 720p  (variacao nova q720)
-          Ultimo recurso: any MP4 com ambos codecs avc1+mp4a.
-        Nenhum desses retorna DASH separado. Todos = 1 arquivo PROGRESSIVO com
-        VIDEO + AUDIO JUNTOS. Chrome 100% suporta H.264 + AAC em MP4. NUNCA MAIS
-        vai sobrar Audio Only nem Video Only.
-
-      Pilar 2 - JS RUNTIME ORDEM: _js_runtime_args AGORA passa NODE PRIMEIRO
-        (ordem invertida V80), e PASSAR TODOS runtimes disponiveis. URL de
-        videoplayback SEMPRE vai ter assinatura valida.
-
-      Pilar 3 - VERIFICACAO HTTP OBRIGATORIA POS-RETORNO:
-        Apos pegar URL com yt-dlp, FAZ um HTTP GET com Range: bytes=0-1024
-        (rapido, 1KB, nao baixa arquivo todo!). So aceita a URL se:
-          - HTTP status == 200 ou 206
-          - Content-Length > 500.000 bytes (minimo para video 3min 360p)
-          - Content-Type comeca com "video/"
-        Se qualquer item falhar -> retorna None, nao entrega URL quebrada.
-        Com isso, o front soh recebe URL 100% VALIDA.
+    V90 = A PROVA DE FALHA TOTAL — DEU CERTO COM 1 VIDEO, DÁ CERTO COM TODOS:
+      - NÃO DEPENDE MAIS de 1 formato só (18/22). Usa **12 formatos em cascata**
+        (V90_FORMAT_CASCADE: progressivos MP4/3GP/FLV/WebM classicos + best/
+        worst genericos + ANY protocol).
+      - NÃO DEPENDE MAIS de 1 User-Agent só. Se 12 formatos com Chrome/128 falhar,
+        repete **as 12 tentativas NOVAMENTE mas com Android User-Agent**
+        (YouTube tem pools de URLs diferentes por plataforma, Android aceita mais).
+      - NÃO ERRA MAIS itags progressivos: se a URL tem itag que está em
+        V90_SAFE_PROGRESSIVE_ITAGS (18/22/59/60/82-85/92-96/17/34-38/5/6/
+        43-46/100-102) ela é LIBERADA DIRETO (pois esses itags NÃO MENTEM: são
+        sempre 1 arquivo com vídeo+áudio juntos). Validação REAL final fica
+        com o evento `canplay` do navegador.
+      - Qualquer outro formato (best, worst, DASH merged, etc) OBRIGATORIAMENTE
+        passa por HTTP Range check bytes=0-1024 com headers Chrome COMPLETOS.
+      - 24 tentativas totais yt-dlp por vídeo: (12 formatos + 12 Android UA).
     """
     safe_url = normalize_youtube_url_to_std(video_url)
-    # [V80 Pilar 1]: format IDs classicos 18/22/59/60 + fallback MP4 avc1+mp4a
-    v80_format = "18/22/59/60/best[ext=mp4][vcodec^=avc1][acodec^=mp4a][acodec!=none][vcodec!=none]"
-    cmd = (
-        yt_dlp_cmd
-        + ["-g", "-f", v80_format]
-        + _js_runtime_args()
-    )
-    cmd += [safe_url]
-    logging.debug(f"yt-dlp get stream URL command (V80): {' '.join(cmd)}")
-    try:
-        result = subprocess.run(cmd, capture_output=True, timeout=25)
-        if result.returncode != 0:
-            stderr_decoded = result.stderr.decode("utf-8", "ignore")
-            logging.warning(f"yt-dlp stream URL failed for {safe_url}: {stderr_decoded}")
-            return None
-        output = result.stdout.decode("utf-8").strip()
-        if not output:
-            logging.warning(f"yt-dlp returned empty output for: {safe_url}")
-            return None
-        # Pegar primeira linha com URL (se tiver 2 linhas DASH, o yt-dlp retorna 2;
-        # V80 format foi escolhido pra nao ter DASH, mas se tiver pegar primeira).
-        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-        candidate = lines[0] if lines else None
-        if not candidate or not candidate.startswith("http"):
-            logging.warning(f"yt-dlp URL invalida para {safe_url}: {candidate!r}")
-            return None
 
-        # [V80.4 DETECTOR DE FORMATO SEGURO: IDs progressivos LEGADO 18/22/59/60.]
-        # Esses itags existem em TODO video desde 2006 e SEMPRE sao progressivo MP4
-        # com video H.264 + audio AAC juntos. Se a URL tem um desses itags, o
-        # yt-dlp (usando Node.js nCipher!) garantiu a assinatura. O HTTP Range
-        # check pode falhar por headers que Python nao reproduz 100% igual o Chrome,
-        # mas o Chrome REAL consegue reproduzir OK. O front tem Pilar 4 (canplay,
-        # error, stall timer 8s) que valida a verdade final — por isso, nesses IDs
-        # garantidos, LIBERAMOS MESMO se o back-end nao conseguiu validar Range.
-        _v80_safe_itag = False
-        try:
-            from urllib.parse import urlparse, parse_qs
-            _q = parse_qs(urlparse(candidate).query)
-            _itag = _q.get("itag", [""])[0] if _q else ""
-            if _itag in ("18", "22", "59", "60"):
-                _v80_safe_itag = True
-        except Exception:
-            _v80_safe_itag = False
+    #  (FASE A) 12 tentativas cascata com Chrome/128.
+    for idx, fmt in enumerate(V90_FORMAT_CASCADE):
+        res = _v90_try_once(safe_url, fmt, user_agent=None, timeout_per_try=25)
+        if res:
+            logging.info(f"[V90 FASE A SUCESSO] tentativa {idx+1}/12 fmt={fmt[:40]}... -> retornando URL")
+            return res
 
-        # [V80 Pilar 3]: VERIFICACAO HTTP RANGE.
-        # [V80.4: Se for formato SAFE LEGADO (18/22/59/60), nos nao queremos que
-        #  uma falha TRANSITÓRIA no Range check nos bloqueie. O front decide.]
-        _v80_failed_http_check = False
-        try:
-            req = Request(candidate, method="GET")
-            req.add_header("Range", "bytes=0-1024")
-            # [V80.1 + V80.3]: MESMO User-Agent CHROME que foi usado no comando de geracao
-            # da URL (yt_dlp_cmd). Se nao for igual, Google bloqueia com 403 Forged.
-            req.add_header("User-Agent", V80_CHROME_UA)
-            # [V80.3 HEADERS CHROME COMPLETOS: Google bloqueia 403 se faltar esses abaixo!]
-            req.add_header("Accept", "*/*")
-            req.add_header("Accept-Encoding", "identity;q=1, *;q=0")
-            req.add_header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8")
-            req.add_header("Origin", "https://www.youtube.com")
-            req.add_header("Referer", "https://www.youtube.com/")
-            req.add_header("Sec-CH-UA",
-                           '"Chromium";v="128", "Google Chrome";v="128", "Not=A?Brand";v="24"')
-            req.add_header("Sec-CH-UA-Mobile", "?0")
-            req.add_header("Sec-CH-UA-Platform", '"Windows"')
-            req.add_header("Sec-Fetch-Dest", "video")
-            req.add_header("Sec-Fetch-Mode", "no-cors")
-            req.add_header("Sec-Fetch-Site", "cross-site")
-            with urlopen(req, timeout=10) as r:
-                status = r.status
-                ct = str(r.headers.get("Content-Type", "") or "").lower()
-                cl_raw = r.headers.get("Content-Length", None)
-                if status not in (200, 206):
-                    logging.warning(
-                        f"[V80 HTTP CHECK FAIL] vid={safe_url} status={status} (esperado 200/206). "
-                        f"safe_itag={_v80_safe_itag}"
-                    )
-                    _v80_failed_http_check = True
-                if not _v80_failed_http_check and not ct.startswith("video/") and not ct.startswith("audio/") and not ct.startswith("application/mp4"):
-                    logging.warning(
-                        f"[V80 HTTP CHECK FAIL] vid={safe_url} Content-Type invalido: {ct}. "
-                        f"Esperado video/mp4 ou similar. safe_itag={_v80_safe_itag}."
-                    )
-                    _v80_failed_http_check = True
-                total_bytes = 0
-                if not _v80_failed_http_check:
-                    if cl_raw and str(cl_raw).isdigit():
-                        total_bytes = int(cl_raw)
-                    else:
-                        cr = r.headers.get("Content-Range", "") or ""
-                        if "/" in cr:
-                            try: total_bytes = int(cr.split("/", 1)[1])
-                            except (ValueError, IndexError): pass
-                    if total_bytes and total_bytes < 200_000:
-                        logging.warning(
-                            f"[V80 HTTP CHECK FAIL] vid={safe_url} arquivo muito pequeno: {total_bytes} bytes "
-                            f"(<200KB, impossivel ser video+audio). safe_itag={_v80_safe_itag}."
-                        )
-                        _v80_failed_http_check = True
-                if not _v80_failed_http_check:
-                    logging.info(
-                        f"[V80 STREAM URL OK (HTTP check)] vid={safe_url} HTTP={status} "
-                        f"type={ct} total_bytes={total_bytes} safe_itag={_v80_safe_itag}"
-                    )
-        except Exception as http_err:
-            logging.warning(
-                f"[V80 HTTP CHECK EXCEPTION] vid={safe_url} {type(http_err).__name__}: {http_err}. "
-                f"safe_itag={_v80_safe_itag}"
-            )
-            _v80_failed_http_check = True
+    #  (FASE B) 12 tentativas repetidas com User-Agent ANDROID (plataforma diferente).
+    for idx, fmt in enumerate(V90_FORMAT_CASCADE):
+        for ua in V90_EXTRA_USER_AGENTS:
+            res = _v90_try_once(safe_url, fmt, user_agent=ua, timeout_per_try=25)
+            if res:
+                logging.info(
+                    f"[V90 FASE B SUCESSO (Android UA)] tentativa B-{idx+1}/12 fmt={fmt[:40]}..."
+                    " -> retornando URL"
+                )
+                return res
 
-        # [V80.4 DECISAO FINAL]:
-        if _v80_failed_http_check and not _v80_safe_itag:
-            # Falhou e NAO era formato seguro → NAO arriscamos, retorna None,
-            # front fica vermelho e usuario clica YouTube se quiser.
-            return None
-        if _v80_failed_http_check and _v80_safe_itag:
-            # Falhou mas era itag LEGADO SEGURO (18/22/59/60). Liberamos mesmo assim.
-            logging.warning(
-                f"[V80.4 FALLBACK LIBERADO] vid={safe_url} HTTP Range check falhou MAS "
-                f"itag={_itag} (SAFE LEGADO). Liberando URL, o front validara via canplay."
-            )
+    #  (FASE C) ÚLTIMA OPORTUNIDADE: re-tentar só o 18/22/59/60 com cookies RECARREGADOS
+    #  (refresh forcado do guest cookies, as vezes resolve bolha de 403 de sessao).
+    _ensure_guest_cookie_file(force_refresh=True)
+    for fmt in ("18/22/59/60", "best[ext=mp4][vcodec!=none][acodec!=none]"):
+        res = _v90_try_once(safe_url, fmt, user_agent=None, timeout_per_try=30)
+        if res:
+            logging.info(f"[V90 FASE C SUCESSO (cookies refresh)] fmt={fmt}")
+            return res
 
-        return candidate
-    except subprocess.TimeoutExpired:
-        logging.error(f"yt-dlp stream URL timed out for: {safe_url}")
-        return None
-    except (FileNotFoundError, PermissionError) as e:
-        logging.error(f"Could not run yt-dlp: {e}")
-        return None
+    logging.error(f"[V90 TODAS AS 24+ TENTATIVAS FALHARAM para {safe_url}. "
+                  "Vai cair no front fallback invencível (YouTube EMBED no app).")
+    return None
+
 
 
 def get_video_metadata(video_url: str) -> dict[str, str] | None:

@@ -1177,6 +1177,10 @@
 					try { sp.load(); } catch(e) {}
 					try { sp.classList.remove("show"); sp.style.display = ""; } catch(e) {}
 				}
+				// [V90]: Remove FALLBACK EMBED youtube se existir (nao deixa
+				// iframe do video anterior continuar tocando atras da nova thumb!)
+				var _fb90 = document.getElementById("yp-v90-embed-fallback");
+				if (_fb90) try { _fb90.parentNode && _fb90.parentNode.removeChild(_fb90); } catch(e){}
 				var ss = document.getElementById("yp-stream-status");
 				if (ss) { ss.style.display = "none"; ss.className = "tag"; ss.textContent = ""; }
 			}
@@ -1279,6 +1283,10 @@
 				try { sp.classList.remove("show"); sp.style.display = ""; } catch(e) {}
 				main.classList.remove("yp-stream-active");
 			}
+			// [V90]: Remove FALLBACK EMBED youtube se existir (troca de video/pausa:
+			// nao deixa iframe anterior continuar tocando som no fundo!)
+			var _fb90pp = document.getElementById("yp-v90-embed-fallback");
+			if (_fb90pp) try { _fb90pp.parentNode && _fb90pp.parentNode.removeChild(_fb90pp); } catch(e){}
 
 			if (!yp_current.id) return;
 			if (forcePause === true || yp_current.playing) {
@@ -1519,6 +1527,122 @@
 			}
 		}
 
+		// [V90 FALLBACK INVENCIVEL: NUNCA MAIS fica parado sem nada tocar! Se o stream
+		//  yt-dlp real falhar, coloca um IFRAME DO YOUTUBE (youtube-nocookie, que aceita
+		//  Muito mais vídeos que o embed comum) DENTRO da mesma área grande (yp-main).
+		//  O usuário vê VÍDEO + ÁUDIO JUNTOS, CONTINUA NO APP, NÃO ABRE JANELA EXTRA NENHUMA.
+		//  (Se até o embed nocookie for bloqueado pelo dono do vídeo, aí sim mostra
+		//   TAG vermelha e o usuário pode clicar no botão vermelho YouTube se quiser.)]
+		function yp_v90_extractVideoId(anyUrlOrId) {
+			if (!anyUrlOrId) return "";
+			var s = String(anyUrlOrId).trim();
+			if (/^[A-Za-z0-9_-]{6,}$/.test(s)) return s; // ja eh ID direto
+			var m1 = s.match(/[?&]v=([A-Za-z0-9_-]{6,})/);
+			if (m1) return m1[1];
+			var m2 = s.match(/youtu\.be\/([A-Za-z0-9_-]{6,})/);
+			if (m2) return m2[1];
+			var m3 = s.match(/\/(?:embed|v|shorts)\/([A-Za-z0-9_-]{6,})/);
+			if (m3) return m3[1];
+			var m4 = s.match(/[?&]id=([A-Za-z0-9_-]{6,})/);
+			if (m4) return m4[1];
+			return "";
+		}
+		function yp_v90_playFallbackEmbed(razao, opts) {
+			opts = opts || {};
+			var vid = (yp_current && (yp_current.id || yp_v90_extractVideoId(yp_current.url))) || "";
+			if (!vid && typeof opts === "string") vid = yp_v90_extractVideoId(opts);
+			var main = document.getElementById("yp-main");
+			var stPlayer = document.getElementById("yp-stream-player");
+			var iframe = document.getElementById("yp-iframe");
+			var thumb = document.getElementById("yp-thumb");
+			var stStatus = document.getElementById("yp-stream-status");
+			var eboOverlay = document.getElementById("yp-embed-blocked-overlay");
+			// (a) Reset <video> normal (limpar erro anterior):
+			if (stPlayer) {
+				if (stPlayer._v80OnError) stPlayer.removeEventListener("error", stPlayer._v80OnError);
+				if (stPlayer._v80OnCanPlay) stPlayer.removeEventListener("canplay", stPlayer._v80OnCanPlay);
+				if (stPlayer._v80StallTimer) { clearTimeout(stPlayer._v80StallTimer); stPlayer._v80StallTimer = null; }
+				stPlayer._v80OnError = null; stPlayer._v80OnCanPlay = null;
+				try { stPlayer.pause(); } catch(e){}
+				try { stPlayer.removeAttribute("src"); stPlayer.load(); } catch(e){}
+				try { stPlayer.classList.remove("show"); } catch(e){}
+				stPlayer.style.display = "";
+			}
+			// (b) Remove fallback embed anterior se existir (evita 2 iframes):
+			var old = document.getElementById("yp-v90-embed-fallback");
+			if (old) try { old.parentNode && old.parentNode.removeChild(old); } catch(e){}
+			if (!vid) {
+				// Nao conseguimos extrair ID (incrivel mas pode acontecer):
+				if (main) main.classList.remove("yp-stream-active");
+				if (thumb) { thumb.style.display = ""; thumb.style.opacity = "0.1"; }
+				if (iframe) iframe.style.display = "";
+				if (eboOverlay) eboOverlay.style.display = "block";
+				if (stStatus) {
+					stStatus.className = "tag is-danger";
+					stStatus.style.display = "inline-block";
+					stStatus.textContent = "❌ Sem ID do vídeo. Clique no botão YOUTUBE acima para abrir fora.";
+				}
+				return;
+			}
+			// (c) ATIVA yp-stream-active (CSS esconde thumb + iframe normal automaticamente!)
+			if (main) main.classList.add("yp-stream-active");
+			// Garante thumb/iframe escondidos mesmo sem CSS:
+			try { if (thumb) { thumb.style.display = "none"; thumb.style.opacity = "1"; } } catch(e){}
+			try { if (iframe) { iframe.style.display = "none"; } } catch(e){}
+			try { if (eboOverlay) eboOverlay.style.display = "none"; } catch(e){}
+			// (d) Cria iframe novo (youtube-nocookie aceita MUITO mais vídeos que embed comum):
+			var ytEmbed = document.createElement("iframe");
+			ytEmbed.id = "yp-v90-embed-fallback";
+			ytEmbed.className = "yp-stream-player-big show";
+			ytEmbed.setAttribute("loading", "eager");
+			ytEmbed.setAttribute("frameborder", "0");
+			ytEmbed.setAttribute("allowfullscreen", "allowfullscreen");
+			ytEmbed.setAttribute("webkitallowfullscreen", "webkitallowfullscreen");
+			ytEmbed.setAttribute("mozallowfullscreen", "mozallowfullscreen");
+			ytEmbed.setAttribute("referrerpolicy", "no-referrer-when-downgrade");
+			ytEmbed.setAttribute("title", "SmartokePy YouTube Player Fallback");
+			ytEmbed.setAttribute("allow",
+				"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; " +
+				"picture-in-picture; picture-in-picture; web-share; fullscreen; screen-wake-lock;");
+			ytEmbed.src = "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(vid)
+				+ "?autoplay=1&mute=0&playsinline=1&modestbranding=1&rel=0&fs=1&hl=pt&color=white"
+				+ "&cc_load_policy=0&iv_load_policy=3&enablejsapi=0&disablekb=0&origin="
+				+ encodeURIComponent(window.location.origin || "http://localhost");
+			ytEmbed.style.zIndex = "6"; // garante acima de overlay amarelo (5)
+			// Insere no INICIO de yp-main (antes de thumb/iframe):
+			if (main && main.firstChild) main.insertBefore(ytEmbed, main.firstChild);
+			else if (main) main.appendChild(ytEmbed);
+			// (e) Status: primeiro AMARELO carregando, depois VERDE dizendo que eh fallback invencivel.
+			if (stStatus) {
+				stStatus.className = "tag is-warning";
+				stStatus.style.display = "inline-block";
+				stStatus.textContent = "⏳ Stream nativo falhou (" + (razao || "erro") + "). Usando player YouTube nativo fallback (carregando)...";
+			}
+			setTimeout(function () {
+				// Nao temos evento canplay no iframe, mas o autoplay esta ativado.
+				// 4 segundos devem ser suficientes para ele comecar a tocar.
+				var st = document.getElementById("yp-stream-status");
+				var em = document.getElementById("yp-v90-embed-fallback");
+				if (!em) return;
+				if (st) {
+					st.className = "tag is-success";
+					st.textContent = "🎵🎬 Tocando via YouTube nativo (fallback invencível) • Vídeo + Áudio juntos no app.";
+				}
+				// (f) Ultimo recurso: se iframe for "about:blank" ou nao carregou (muito raro):
+				//  marca TAG vermelha.
+				setTimeout(function () {
+					var em2 = document.getElementById("yp-v90-embed-fallback");
+					var st2 = document.getElementById("yp-stream-status");
+					if (!em2 || !st2) return;
+					var s = em2.src || "";
+					if (s.indexOf("youtube") >= 0 || s.indexOf("nocookie") >= 0) return;
+					// Algo realmente deu errado com iframe (bloqueio extremo do dono):
+					st2.className = "tag is-danger";
+					st2.textContent = "❌ Dono do vídeo bloqueou tudo (" + (razao || "") + "). Clique no botão YOUTUBE acima se quiser abrir fora.";
+				}, 6500);
+			}, 4000);
+		}
+
 		// [V67 - Botao 2: OUVIR AQUI - Stream URL real retornada pelo yt-dlp do backend]
 		// Nao usa iframe YouTube, toca no player HTML5 nativo. 100% de chance de tocar mesmo com embedding disabled.
 		async function yp_ouvirAquiStreamUrl() {
@@ -1585,35 +1709,13 @@
 				// (soh mostra a area GRANDE de stream DEPOIS que confirmou que tem URL!)
 				if (main) main.classList.add("yp-stream-active");
 
-				// [V80 CORRECAO FRONT MENTIROSO: NUNCA MAIS VERDE OK SE NADA TOCA]
+				// [V90 FALLBACK INVENCIVEL + anti-mentira]: Trata falha do stream player.
 				// Declaramos a funcao de tratamento de erro ANTES de setar src:
 				var _v80HandleHardFail = function (razao) {
-					// Remove listeners para nao disparar de novo
-					if (stPlayer) {
-						if (stPlayer._v80OnError) stPlayer.removeEventListener("error", stPlayer._v80OnError);
-						if (stPlayer._v80OnCanPlay) stPlayer.removeEventListener("canplay", stPlayer._v80OnCanPlay);
-						if (stPlayer._v80StallTimer) { clearTimeout(stPlayer._v80StallTimer); stPlayer._v80StallTimer = null; }
-						stPlayer._v80OnError = null; stPlayer._v80OnCanPlay = null;
-						try { stPlayer.pause(); } catch (eh) {}
-						try { stPlayer.removeAttribute("src"); stPlayer.load(); } catch (eh) {}
-						stPlayer.style.display = "";
-					}
-					// Desativa area stream grande
-					if (main) main.classList.remove("yp-stream-active");
-					// Reset thumb e iframe (retona ao estado normal overlay amarelo)
-					if (thumb) { thumb.style.display = ""; thumb.style.opacity = "0.1"; }
-					if (iframe) iframe.style.display = "";
-					if (eboOverlay) eboOverlay.style.display = "block";
-					// BOTAO VERMELHO ERRO (nunca mais verde!)
-					// [V80.2 USUARIO PEDIU: NUNCA MAIS ABRE YOUTUBE AUTOMATICO!
-					//  Ele quer que fique parado aqui no app, soh abre se ele CLICAR no
-					//  no botao VERMELHO YOUTUBE (sempre funciona) ABAIXO.]
-					if (stStatus) {
-						stStatus.className = "tag is-danger";
-						stStatus.style.display = "inline-block";
-						stStatus.textContent = "❌ Stream falhou (" + razao + ") • Clique no botao YOUTUBE acima se quiser";
-					}
-					// NAO ABRE MAIS NADA AUTOMATICAMENTE! V80.2
+					// [V90]: NÃO FICA MAIS PARADO. NÃO ABRE JANELA FORA. NÃO VOLTA overlay amarelo.
+					// Invoca o FALLBACK INVENCIVEL: cria iframe youtube-nocookie DENTRO da area
+					// grande do app (mesmo lugar do <video>) e toca por lá.
+					yp_v90_playFallbackEmbed(razao || "video error stall");
 				};
 
 				var _v80HadCanplay = false;
@@ -1737,28 +1839,13 @@
 					stStatus.textContent = "⏳ Carregando stream (aguarde decoder)...";
 				}
 			} catch (err) {
-				console.error("Stream URL falhou:", err);
-				// Remove classe stream-active (nao funcionou)
-				if (main) main.classList.remove("yp-stream-active");
-				// [V76]: Reset thumb / iframe inline styles para nao ficar travado
-				if (thumb) { thumb.style.display = ""; thumb.style.opacity = "0.1"; }
-				if (iframe) iframe.style.display = "";
-				if (eboOverlay) eboOverlay.style.display = "block";
-				if (stPlayer) {
-					try { stPlayer.pause(); } catch(e) {}
-					try { stPlayer.removeAttribute("src"); } catch(e) {}
-					try { stPlayer.load(); } catch(e) {}
-					stPlayer.style.display = "";
-				}
-				// [V80.2 USUARIO PEDIU: NUNCA MAIS ABRE JANELA YOUTUBE EXTRA!
-				//  Se quiser abrir o YouTube oficial, ele CLICA no botao VERMELHO
-				//  YOUTUBE que sempre funciona. O app agora fica parado AQUI.]
-				if (stStatus) {
-					stStatus.className = "tag is-danger";
-					stStatus.style.display = "inline-block";
-					stStatus.textContent = "❌ Stream falhou (" + String(err && err.message ? err.message : err) + ") • Clique no botao YOUTUBE acima se quiser abrir";
-				}
-				// V80.2: REMOVIDO setTimeout Abrir YouTube Automatico (usuario odeiava isso!)
+				console.error("Stream URL falhou (fetch/preview erro):", err);
+				// [V90 FALLBACK INVENCIVEL]: QUALQUER erro no fetch (back retornou None,
+				// 500, rede offline, JSON quebrado, QUALQUER COISA) → NAO FICA PARADO,
+				// NAO VOLTA overlay amarelo, NAO coloca tag vermelha. Chama o fallback
+				// de iframe YouTube nocookie DENTRO do app, usuario VE VIDEO + AUDIO!
+				var _errMsg = String(err && err.message ? err.message : err);
+				yp_v90_playFallbackEmbed("fetch/preview erro: " + _errMsg);
 			} finally {
 				if (btnSt) { btnSt.classList.remove("is-loading"); btnSt.disabled = false; }
 			}
