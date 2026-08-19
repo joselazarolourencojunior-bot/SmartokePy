@@ -1132,27 +1132,33 @@
 			if (!yp_current.url) ytLink.style.display = "none";
 			else ytLink.style.display = "inline";
 
-			// [V75: RESET DOS MODOS DA AREA PRINCIPAL (yp-main)]
-			// Quando troca video, volta ao MODO 1 (apenas thumbnail visivel).
-			// Remove stream player, iframe block overlay, etc.
+			// [V76 HOTFIX CRITICO TELA PRETA]:
+			// Reset MODOS da area principal yp-main.
 			var main = document.getElementById("yp-main");
 			if (main) {
 				main.classList.remove("yp-stream-active");
+				main.classList.remove("playing");
 				// Esconde overlay "Video bloqueado"
 				var ov = document.getElementById("yp-embed-blocked-overlay");
 				if (ov) ov.style.display = "none";
-				// Mostra thumbnail, esconde iframe e stream-player por enquanto
-				var thumb = document.getElementById("yp-thumb");
-				if (thumb) { try { thumb.style.display = "block"; } catch(e) {} }
+				// [V76 BUG CRITICO 1]: NUNCA MAIS FORCE iframe.style.display = "block"
+				// via inline style! Porque #yp-main iframe { display:none } do CSS
+				// TEM MENOS ESPECIFICIDADE que inline style → iframe ficava SEMPRE
+				// VISIVEL com position:absolute inset:0 background:#000 → TELA PRETA!
+				// SOLUCAO: Apenas zere o inline style (display="") → CSS volta a mandar.
 				var ifr = document.getElementById("yp-iframe");
-				if (ifr) { ifr.style.display = "block"; ifr.src = "about:blank"; }
+				if (ifr) { ifr.style.display = ""; ifr.src = "about:blank"; }
+				// Thumbnail visivel, com OPACIDADE NORMAL (o overlay amarelo V75 pode
+				// ter setado 0.1 em um video anterior e NUNCA MAIS limpou!)
+				var thumb = document.getElementById("yp-thumb");
+				if (thumb) { thumb.style.display = "block"; thumb.style.opacity = "1"; }
 				// Reseta stream player grande
 				var sp = document.getElementById("yp-stream-player");
 				if (sp) {
 					try { sp.pause(); } catch(e) {}
 					try { sp.removeAttribute("src"); } catch(e) {}
 					try { sp.load(); } catch(e) {}
-					try { sp.classList.remove("show"); } catch(e) {}
+					try { sp.classList.remove("show"); sp.style.display = ""; } catch(e) {}
 				}
 				var ss = document.getElementById("yp-stream-status");
 				if (ss) { ss.style.display = "none"; ss.className = "tag"; ss.textContent = ""; }
@@ -1202,22 +1208,23 @@
 			document.getElementById("yp-actions").style.display = "none";
 			var main = document.getElementById("yp-main");
 			main.classList.remove("playing");
-			// [V75]: Reset tambem modos do yp-main (igual yp_setPreview)
+			// [V76]: Reset tambem modos do yp-main (igual yp_setPreview)
 			main.classList.remove("yp-stream-active");
 			var ov = document.getElementById("yp-embed-blocked-overlay");
 			if (ov) ov.style.display = "none";
-			var iframe = main.querySelector("iframe");
-			if (iframe) iframe.src = "about:blank";
+			var iframe = document.getElementById("yp-iframe");
+			// [V76 BUG CRITICO TELA PRETA]: Nunca deixe iframe com inline display:block!
+			if (iframe) { iframe.style.display = ""; iframe.src = "about:blank"; }
 			var thumb = document.getElementById("yp-thumb");
-			if (thumb) { thumb.style.display = "block"; thumb.src = ""; }
-			if (iframe) iframe.style.display = "block";
-			// [V67]: PARAR O STREAM PLAYER HTML5 quando resetar
+			// [V76 BUG OPACIDADE]: Reset opacidade para 1 (overlay amarelo pode ter colocado 0.1)
+			if (thumb) { thumb.style.display = "block"; thumb.src = ""; thumb.style.opacity = "1"; }
+			// [V67 + V76]: PARAR O STREAM PLAYER HTML5 quando resetar
 			var sp = document.getElementById("yp-stream-player");
 			if (sp) {
 				try { sp.pause(); } catch (e) {}
 				try { sp.removeAttribute("src"); } catch(e) {}
 				try { sp.load(); } catch (e) {}
-				try { sp.classList.remove("show"); } catch(e) {}
+				try { sp.classList.remove("show"); sp.style.display = ""; } catch(e) {}
 			}
 			var ss = document.getElementById("yp-stream-status");
 			if (ss) { ss.style.display = "none"; ss.className = "tag"; ss.textContent = ""; }
@@ -1232,10 +1239,12 @@
 
 		function yp_playPause(forcePause) {
 			var main = document.getElementById("yp-main");
-			var iframe = main.querySelector("iframe");
-			// [V75]: Esconde overlay amarelo de bloqueio quando o usuario clica de novo (play/pause toggle)
+			var iframe = document.getElementById("yp-iframe");
+			// [V76]: Esconde overlay amarelo + reseta opacidade da thumb
 			var ov = document.getElementById("yp-embed-blocked-overlay");
 			if (ov) ov.style.display = "none";
+			var thumb = document.getElementById("yp-thumb");
+			if (thumb) thumb.style.opacity = "1";
 			// [V67 + V75]: ANTES DE QUALQUER COISA, se estiver tocando STREAM URL HTML5, PARA ELE
 			// (evita 2 sons ao mesmo tempo)
 			var sp = document.getElementById("yp-stream-player");
@@ -1243,7 +1252,7 @@
 				try { sp.pause(); } catch (e) {}
 				try { sp.removeAttribute("src"); } catch(e) {}
 				try { sp.load(); } catch (e) {}
-				try { sp.classList.remove("show"); } catch(e) {}
+				try { sp.classList.remove("show"); sp.style.display = ""; } catch(e) {}
 				main.classList.remove("yp-stream-active");
 			}
 			if (!yp_current.id) return;
@@ -1251,11 +1260,16 @@
 				// Pausar: tira o playing (mostra thumb de novo) e reseta src do iframe
 				yp_current.playing = false;
 				main.classList.remove("playing");
-				if (iframe) iframe.src = "about:blank";
+				// [V76 BUG CRITICO TELA PRETA]: Zere inline style de iframe (nao force block via inline!)
+				if (iframe) { iframe.style.display = ""; iframe.src = "about:blank"; }
 			} else {
 				// Play: carrega iframe YouTube embed com autoplay
 				yp_current.playing = true;
 				main.classList.add("playing");
+				// [V76]: NÃO FORCE iframe.style.display = "block" inline!
+				// O CSS #yp-main.playing iframe { display:block } JA FAZ ISSO
+				// (evita tela preta quando usuario pausar pois inline style nao volta)
+				if (iframe) { iframe.style.display = ""; }
 				// [V67]: PARAMS MELHORES para iframe YouTube
 				//   - removi origin= (as vezes bloqueia embedding em videos com restricao)
 				//   - enablejsapi=1: permite API
@@ -1269,14 +1283,13 @@
 						+ "?autoplay=1&rel=0&controls=1&playsinline=1&enablejsapi=1"
 						+ "&iv_load_policy=3&cc_load_policy=0&fs=1&modestbranding=1";
 				}
-				// [V75 HOTFIX OVERLAY BLOQUEADO]:
+				// [V75 HOTFIX OVERLAY BLOQUEADO + V76]:
 				// Muitos videos de karaoke tem embedding desabilitado. O iframe YT
 				// retorna "Video indisponível" mas nao manda NENHUM evento cross-origin
 				// para o nosso script (nao tem como detectar on/off error).
 				// SOLUCAO: Se depois de 2.8 segundos o iframe AINDA esta no mesmo
 				// SRC embed (nao ocorreu redirect / erro cross-origin detectavel),
 				// mostra o overlay AMARELO amigavel explicando: use os botoes ABAIXO!
-				var expectedSrc = iframe ? iframe.src : "";
 				var ytIdNow = yp_current.id;
 				setTimeout(function () {
 					// Se o usuario JA mudou de video (nao eh o mesmo id), nao mostra
@@ -1294,7 +1307,7 @@
 					var ovNow = document.getElementById("yp-embed-blocked-overlay");
 					if (ovNow) {
 						ovNow.style.display = "block";
-						// Garante thumb/iframe nao atrapalhem o overlay
+						// Garante thumb nao atrapalhe o overlay MAS VOLTA PRA 1 DEPOIS (V76 BUG FIX!)
 						try { document.getElementById("yp-thumb").style.opacity = "0.1"; } catch(e){}
 					}
 				}, 2800);
@@ -1492,6 +1505,8 @@
 			if (yp_current.playing) yp_playPause(true);
 			// Esconde overlay de bloqueio (se estava aparecendo)
 			if (eboOverlay) eboOverlay.style.display = "none";
+			// [V76]: Reset opacidade thumbnail para 1
+			if (thumb) thumb.style.opacity = "1";
 			// Mostra frame do main, mas em modo stream
 			if (main) main.classList.add("yp-stream-active");
 
@@ -1507,7 +1522,7 @@
 				var streamUrl = data.stream_url;
 				if (!streamUrl) throw new Error("Nenhuma URL de stream retornada");
 
-				// [V75 MUDANCA FATAL]:
+				// [V75 MUDANCA FATAL + V76 HOTFIX display inline]:
 				// ANTES: stPlayer ficava ABAIXO dos botoes (150px), pequeno, ilegivel,
 				// enquanto o iframe "Video Indisponivel" continuava aparecendo na area
 				// principal (efeito horrivel, usuario achava que nao funcionava!).
@@ -1517,12 +1532,10 @@
 				// (display: none !important). Agora usuario VE o video tocando em TAMANHO GRANDE,
 				// nao ve mais "Video Indisponivel" nenhum na tela principal, acabou a confusao!
 				if (stPlayer) {
-					// Garante que vai mostrar
+					// Garante que vai mostrar MAS NAO USE inline display:block!
+					// (o CSS #yp-main.yp-stream-active .yp-stream-player-big ja faz isso com !important)
 					try { stPlayer.classList.add("show"); } catch (e) {}
-					stPlayer.style.display = "block";
-					stPlayer.style.position = "absolute";
-					stPlayer.style.inset = "0";
-					stPlayer.style.zIndex = "10";
+					stPlayer.style.display = ""; // zere inline style, CSS decide
 					stPlayer.src = streamUrl;
 					try { stPlayer.muted = false; stPlayer.volume = 0.9; } catch (e) {}
 					var playProm = stPlayer.play();
@@ -1545,6 +1558,15 @@
 				console.error("Stream URL falhou:", err);
 				// Remove classe stream-active (nao funcionou)
 				if (main) main.classList.remove("yp-stream-active");
+				// [V76]: Reset thumb / iframe inline styles para nao ficar travado
+				if (thumb) { thumb.style.display = ""; thumb.style.opacity = "1"; }
+				if (iframe) iframe.style.display = "";
+				if (stPlayer) {
+					try { stPlayer.pause(); } catch(e) {}
+					try { stPlayer.removeAttribute("src"); } catch(e) {}
+					try { stPlayer.load(); } catch(e) {}
+					stPlayer.style.display = "";
+				}
 				if (stStatus) {
 					stStatus.className = "tag is-danger";
 					stStatus.style.display = "inline-block";
