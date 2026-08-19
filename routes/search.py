@@ -40,16 +40,36 @@ class DownloadBody(Schema):
 
 @search_bp.route("/search", methods=["GET"])
 def search():
-    """YouTube search page."""
+    """YouTube search page.
+
+    V90.2: get_search_results() agora retorna TUPLA (list_results, fallback_level, fallback_count).
+    """
     k = get_karaoke_instance()
     site_name = get_site_name()
     search_string = request.args.get("search_string")
+    search_fallback_level = 0
+    search_fallback_count = 0
     if search_string:
         non_karaoke = request.args.get("non_karaoke") == "true"
-        search_results = get_search_results(search_string, karaoke_only=not non_karaoke)
+        res = get_search_results(search_string, karaoke_only=not non_karaoke)
+        # Compatibilidade: se for list antiga (ex: mock, testes antigos), envolve em tupla:
+        if isinstance(res, (list, tuple)):
+            if len(res) == 3 and isinstance(res[1], int):
+                search_results, search_fallback_level, search_fallback_count = res
+            else:
+                # fallback se for list sozinha (antigo):
+                search_results = res  # type: ignore[assignment]
+                search_fallback_level = 1 if len(search_results) > 0 else 0
+                search_fallback_count = len(search_results)
+        else:
+            search_results = []
+            search_fallback_level = 0
+            search_fallback_count = 0
     else:
         search_string = None
         search_results = None
+    if search_results is not None and not search_fallback_count:
+        search_fallback_count = len(search_results)
     return render_template(
         "search.html",
         site_title=site_name,
@@ -57,6 +77,8 @@ def search():
         songs=k.song_manager.songs,
         search_results=search_results,
         search_string=search_string,
+        search_fallback_level=search_fallback_level,
+        search_fallback_count=search_fallback_count,
     )
 
 

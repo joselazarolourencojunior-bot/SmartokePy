@@ -123,16 +123,31 @@ _SEARCH_KARAOKE_KEYWORDS = (
     "lyrics on screen karaoke",
     "karaoke lyrics",
     "letra na tela karaoke",
-    "karaoke sertanejo",
-    "karaoke mpb",
-    "karaoke pagode",
-    "karaoke samba",
-    "karaoke funk",
-    "karaoke gospel",
-    "karaoke internacional",
+    "segunda voz",
+    "2a voz",
+    "2ª voz",
+    "segunda voz karaoke",
+    "karaoke segunda voz",
+    "karaoke com 2a voz",
+    "karaoke com 2ª voz",
+    "play da segunda",
+    "letra na tela",
+    "musica com letra na tela",
+    "letra da musica na tela",
+    "sem voz playback",
+    "playback sem voz",
+    "karaoke voz de apoio",
+    "2 vozes karaoke",
+    "karaoke dupla",
+    "karaoke playback completo",
+    "karaoke sem voz playback",
+    "karaoke letra",
+    "karaoke com letra completa",
+    "playback com letra na tela",
+    "instrumental com letra na tela",
 )
 
-_SEARCH_NEGATIVE_KEYWORDS = (
+_SEARCH_NEGATIVE_SOFT = (
     "official video",
     "official music video",
     "official audio",
@@ -144,8 +159,37 @@ _SEARCH_NEGATIVE_KEYWORDS = (
     "cover",
     "reaction",
     "reacts",
-    "entrevista",
     "podcast",
+    "making of",
+    "detras de camaras",
+    "detras de cámaras",
+    "bastidores",
+    "trailer",
+    "teaser",
+    "clipe oficial",
+    "clipe musical",
+    "clipe",
+    "clip oficial",
+    "clipe de",
+    "legendado",
+    "letra e voz",
+    "somente letra",
+    "lyrics video",
+    "letra video",
+    "lyrics video oficial",
+    "videoclipe",
+    "video clipe",
+    "acustico",
+    "acústico",
+    "acoustic",
+    "remix",
+    "dj set",
+    "versao estendida",
+    "versão estendida",
+    "extended",
+)
+
+_SEARCH_NEGATIVE_HARD = (
     "pastor",
     "igreja",
     "culto",
@@ -183,23 +227,6 @@ _SEARCH_NEGATIVE_KEYWORDS = (
     "casamento",
     "aniversario",
     "aniversário",
-    "making of",
-    "detras de camaras",
-    "detras de cámaras",
-    "bastidores",
-    "trailer",
-    "teaser",
-    "clipe oficial",
-    "clipe musical",
-    "clipe",
-    "clip oficial",
-    "clipe de",
-    "legendado",
-    "letra e voz",
-    "somente letra",
-    "lyrics video",
-    "letra video",
-    "lyrics video oficial",
     "prank",
     "challenge",
     "desafio",
@@ -229,13 +256,35 @@ _SEARCH_NEGATIVE_KEYWORDS = (
     "curso de",
     "aula de",
     "ensina",
-    "como fazer",
+    "fifa",
+    "game",
+    "jogo",
+    "jogos",
+    "pelicula",
+    "filme",
+    "trailer oficial",
+    "serie",
+    "série",
+    "novela",
 )
+
+_SEARCH_NEGATIVE_KEYWORDS = _SEARCH_NEGATIVE_HARD + _SEARCH_NEGATIVE_SOFT
 
 
 def _normalize_search_text(text: str) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"\s+", " ", text).strip().casefold()
+
+_SEARCH_NEGATIVE_HARD_SET = frozenset(
+    _normalize_search_text(k) for k in _SEARCH_NEGATIVE_HARD
+)
+_SEARCH_NEGATIVE_SOFT_SET = frozenset(
+    _normalize_search_text(k) for k in _SEARCH_NEGATIVE_SOFT
+)
+_SEARCH_KARAOKE_KEYWORDS_NORMALIZED = frozenset(
+    _normalize_search_text(k) for k in _SEARCH_KARAOKE_KEYWORDS
+)
+
 
 
 def _build_search_query(query: str, karaoke_only: bool) -> str:
@@ -261,36 +310,46 @@ def _score_search_result(title: str, channel: str, query: str, karaoke_only: boo
         token_hits = sum(1 for token in query_tokens if token in title_norm)
         score += token_hits * 3
 
-    for keyword in _SEARCH_KARAOKE_KEYWORDS:
-        keyword_norm = _normalize_search_text(keyword)
-        if keyword_norm in title_norm:
+    for kw_norm in _SEARCH_KARAOKE_KEYWORDS_NORMALIZED:
+        if kw_norm in title_norm:
             score += 20
-        if keyword_norm in channel_norm:
+        if kw_norm in channel_norm:
             score += 6
 
     if karaoke_only:
-        for keyword in _SEARCH_NEGATIVE_KEYWORDS:
-            keyword_norm = _normalize_search_text(keyword)
-            if keyword_norm in title_norm:
-                score -= 12
-            if keyword_norm in channel_norm:
-                score -= 4
+        for kw_norm in _SEARCH_NEGATIVE_HARD_SET:
+            if kw_norm in title_norm:
+                score -= 25
+            if kw_norm in channel_norm:
+                score -= 8
+        for kw_norm in _SEARCH_NEGATIVE_SOFT_SET:
+            if kw_norm in title_norm:
+                score -= 3
+            if kw_norm in channel_norm:
+                score -= 1
 
     return score
 
 
 def is_likely_karaoke_result(title: str, channel: str = "") -> bool:
-    """Heuristic to decide whether a result looks like a karaoke/playback track."""
+    """[V90.2 REESCRITA DEFINITIVA: HARD / SOFT SPLIT]
+    Heuristica: se POSITIVA, bloqueia SOMENTE HARD_NEG (cover/ao vivo sao soft, passam).
+    Sem positiva: bloqueia de qualquer forma (obriga ter pelo menos 1 kw karaoke).
+    """
     title_norm = _normalize_search_text(title)
     channel_norm = _normalize_search_text(channel)
-    positive = any(_normalize_search_text(keyword) in title_norm for keyword in _SEARCH_KARAOKE_KEYWORDS)
-    positive = positive or any(
-        _normalize_search_text(keyword) in channel_norm for keyword in _SEARCH_KARAOKE_KEYWORDS
-    )
-    negative_hits = sum(
-        1 for keyword in _SEARCH_NEGATIVE_KEYWORDS if _normalize_search_text(keyword) in title_norm
-    )
-    return positive and negative_hits == 0
+
+    has_positive_title = any(kw in title_norm for kw in _SEARCH_KARAOKE_KEYWORDS_NORMALIZED)
+    has_positive_channel = any(kw in channel_norm for kw in _SEARCH_KARAOKE_KEYWORDS_NORMALIZED)
+    positive = has_positive_title or has_positive_channel
+
+    has_hard_neg_title = any(kw in title_norm for kw in _SEARCH_NEGATIVE_HARD_SET)
+    has_hard_neg_channel = any(kw in channel_norm for kw in _SEARCH_NEGATIVE_HARD_SET)
+    has_hard_neg = has_hard_neg_title or has_hard_neg_channel
+
+    if not positive:
+        return False
+    return not has_hard_neg
 
 
 def _js_runtime_args() -> list[str]:
@@ -671,81 +730,176 @@ def build_ytdl_download_command(
     return cmd
 
 
-def get_search_results(query: str, karaoke_only: bool = False) -> list[list[str]]:
+def get_search_results(query: str, karaoke_only: bool = False) -> tuple[list[list[str]], int, int]:
     """Search YouTube for videos matching the query.
 
-    [V52 - FALLBACK BUSCA NUNCA VAZIA]
-    Se karaoke_only=True e busca 1 retornar ZERO resultados, faz busca 2
-    SEM as palavras extra de karaoke (fallback com resultados gerais para
-    nunca deixar a tela vazia).
-
-    [V78 BUG FALLBACK GRAVE "APARECE VIDEOS DE IGREJA / BIBLIA"]:
-       Antes (BUGADO V52 a V77): O fallback RESULTADOS_2 SEMPRE rodava com
-       karaoke_only=False, MESMO se o usuario pediu karaoke_only=True!
-       Entao o filtro `is_likely_karaoke_result()` e as negativas
-       (pastor, igreja, shorts, bible, clipe oficial, etc) ERAO DESLIGADOS
-       no fallback, trazendo TUDO QUE APARECIA (incluindo videos de igreja
-       e historias biblicas, como o da screenshot do usuario!).
-
-       Correcao V78 (definitiva):
-         - Se karaoke_only=False (modo normal): MANTER fallback antigo
-           (busca2 com karaoke_only=False). MODO NORMAL CONTINUA COMO ERA.
-         - Se karaoke_only=True (modo SO KARAOKE, o default!): NAO FAZ
-           FALLBACK NENHUM! Se resultados_1 (filtro karaoke GRAVE) retornar
-           0, retornar [] (lista vazia)! NUNCA MAIS cair em busca SEM filtro
-           e aparecer igreja/biblia/noticia no modo SO KARAOKE!
+    [V90.2 BUSCA REAL DEFINITIVA — 3 NIVEIS, tupla return, duracao 90-600s]
+    NIVEL 1 = busca OFICIAL com karaoke_only + filtros NOVOS (hard/soft).
+    NIVEL 2 = (apenas karaoke_only=True, raro): N1 deu 0 -> repete com extra
+        keywords "segunda voz letra playback" AINDA COM filtro karaoke_only=True
+        E filtro duration 90-600s. (evita cair em N3 cedo de mais)
+    NIVEL 3 = fallback GERAL raro (sem filtro karaoke): so se N1+N2=0.
 
     Returns:
-        List of [title, url, video_id, channel, duration] for each result.
-        Duration is formatted as M:SS; channel and duration may be empty strings.
+        TUPLA (resultados, fallback_level, fallback_count)
+        - resultados: List of [title, url, video_id, channel, duration]
+        - fallback_level: 1=NORMAL, 2=extra keywords, 3=geral, 0=vazio
+        - fallback_count: qtd de videos que entraram via fallback
     """
     resultados_1 = _do_one_search_pass(query, karaoke_only=karaoke_only)
     if len(resultados_1) > 0:
-        return resultados_1
+        return (resultados_1, 1, 0)
 
-    # [V78 BUG FALLBACK GRAVE KARAOKE]: MODO NORMAL (karaoke_only=False)
-    # PODE usar fallback. MODO SO KARAOKE (karaoke_only=True): NAO PODE!
     if karaoke_only:
         logging.info(
-            "[V78 BUSCA] Modo KARAOKE ONLY ativado: resultados_1 = 0. "
-            "RETORNANDO LISTA VAZIA (sem fallback!), para NAO aparecer videos "
-            "de igreja/biblia/noticia no modo SO KARAOKE. query=%r", query
+            "[V90.2 BUSCA NIVEL2] resultados_1 = 0, query=%r. "
+            "Repetindo com extra 'segunda voz letra playback' ainda com filtro karaoke_only.",
+            query,
         )
-        return []
+        query_nv2 = f"{query} segunda voz letra playback"
+        raw_2 = _do_one_search_pass(query_nv2, karaoke_only=True)
+        if raw_2:
+            resultados_2 = []
+            for row in raw_2:
+                _dur = row[4] or ""
+                _sec = -1
+                if _dur and ":" in _dur:
+                    try:
+                        _p = _dur.split(":")
+                        if len(_p) == 2:
+                            _sec = int(_p[0]) * 60 + int(_p[1])
+                    except Exception:
+                        _sec = -1
+                if _sec >= 0 and (_sec < 90 or _sec > 600):
+                    continue
+                resultados_2.append(row)
+            if len(resultados_2) > 0:
+                logging.info(
+                    "[V90.2 BUSCA NIVEL2 OK] %d videos (apos duration filter 90-600s). query=%r",
+                    len(resultados_2), query,
+                )
+                return (resultados_2, 2, len(resultados_2))
+
+        logging.info(
+            "[V90.2 BUSCA NIVEL2 VAZIO] query=%r. "
+            "Caindo para NIVEL3 (fallback geral karaoke_only=False, RARO).", query,
+        )
+        raw_3 = _do_one_search_pass(query, karaoke_only=False)
+        if raw_3:
+            resultados_3 = []
+            for row in raw_3:
+                _dur = row[4] or ""
+                _sec = -1
+                if _dur and ":" in _dur:
+                    try:
+                        _p = _dur.split(":")
+                        if len(_p) == 2:
+                            _sec = int(_p[0]) * 60 + int(_p[1])
+                    except Exception:
+                        _sec = -1
+                if _sec >= 0 and (_sec < 90 or _sec > 600):
+                    continue
+                resultados_3.append(row)
+            if len(resultados_3) > 0:
+                logging.warning(
+                    "[V90.2 BUSCA NIVEL3 FALLBACK GERAL RARO] %d videos (apos duration filter 90-600s). query=%r",
+                    len(resultados_3), query,
+                )
+                return (resultados_3, 3, len(resultados_3))
+
+        logging.warning(
+            "[V90.2 BUSCA VAZIA TOTAL (1,2,3)] query=%r karaoke_only=%r",
+            query, karaoke_only,
+        )
+        return ([], 0, 0)
 
     logging.warning(
-        "[V52 FALLBACK BUSCA VAZIA] Busca 1 retornou 0 resultados "
-        "(query=%r karaoke_only=%r). Refazendo busca SEM palavras extra "
-        "karaoke (modo fallback geral)...", query, karaoke_only
+        "[V52 FALLBACK BUSCA VAZIA (modo normal, NIVEL2)] Busca 1 retornou 0 resultados "
+        "(query=%r karaoke_only=False). Refazendo busca SEM palavras extra karaoke...", query,
     )
-    resultados_2 = _do_one_search_pass(query, karaoke_only=False)
-    if len(resultados_2) > 0:
-        return resultados_2
+    resultados_2_normal = _do_one_search_pass(query, karaoke_only=False)
+    if len(resultados_2_normal) > 0:
+        return (resultados_2_normal, 2, len(resultados_2_normal))
     logging.error("[V52 BUSCA] Mesmo fallback retornou 0 resultados. query=%r", query)
-    return []
+    return ([], 0, 0)
 
 
 def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
-    """[V52 NOVO] Uma 'passada' de busca (usada em busca normal + fallback)."""
+    """[V90.2 + RETRY 3x + duration 90<=s<=600 no karaoke_only] Uma 'passada' de busca.
+    Usamos .splitlines() em vez de .split(chr(10)) para nao ter SyntaxError de string
+    quebrada em gravacoes Windows CP1252 com helpers.
+    """
     logging.info(
-        "[V52 BUSCA] one pass: query=%r karaoke_only=%r", query, karaoke_only
+        "[V90.2 BUSCA] one pass: query=%r karaoke_only=%r", query, karaoke_only
     )
     requested_query = _build_search_query(query, karaoke_only)
     num_results = 120 if karaoke_only else 60
-    yt_search = f'ytsearch{num_results}:"{requested_query}"'
+    yt_search = 'ytsearch' + str(num_results) + ':"' + requested_query + '"'
     cmd = yt_dlp_cmd + ["-j", "--no-playlist", "--flat-playlist", yt_search]
-    logging.debug(f"yt-dlp search command (one-pass): {' '.join(cmd)}")
-    try:
-        output = subprocess.check_output(cmd, timeout=60).decode("utf-8", "ignore")
-    except subprocess.CalledProcessError as e:
-        logging.debug(f"Error while executing search (one pass): {e}")
-        return []
-    except Exception as e:
-        logging.warning("[V52 BUSCA] subprocess excecao inesperada: %s", e)
-        return []
+    logging.debug("yt-dlp search command (one-pass): " + " ".join(cmd))
+
+    last_output_bytes = b""
+    last_exc = None
+    tentativa = 0
+    max_tentativas = 3
+    output_bytes = b""
+
+    while tentativa < max_tentativas:
+        tentativa += 1
+        try:
+            output_bytes = subprocess.check_output(cmd, timeout=120)
+        except subprocess.CalledProcessError as e:
+            last_exc = e
+            logging.debug(
+                "Error while executing search (one pass) tentativa=%d: %s",
+                tentativa, e,
+            )
+            output_bytes = e.output or b""
+        except subprocess.TimeoutExpired as e:
+            last_exc = e
+            logging.warning(
+                "[V90.2 TIMEOUT BUSCA] _do_one_search_pass query=%r karaoke_only=%r "
+                "tentativa=%d estourou 120s! Retrying... %s",
+                query, karaoke_only, tentativa, e,
+            )
+            output_bytes = b""
+        except Exception as e:
+            last_exc = e
+            logging.warning(
+                "[V52 BUSCA] subprocess excecao inesperada tentativa=%d: %s",
+                tentativa, e,
+            )
+            output_bytes = b""
+
+        last_output_bytes = output_bytes
+        validas = 0
+        for line in last_output_bytes.decode("utf-8", "ignore").splitlines():
+            if len(line) > 2:
+                validas += 1
+        if validas >= 5:
+            logging.debug(
+                "[V90.2 BUSCA RETRY OK] tentativa=%d validas=%d query=%r karaoke_only=%r",
+                tentativa, validas, query, karaoke_only,
+            )
+            break
+        if tentativa < max_tentativas:
+            logging.warning(
+                "[V90.2 BUSCA RETRY] output muito pequeno (%d linhas < 5). "
+                "Sleep 1.5s retry %d/%d. query=%r karaoke_only=%r",
+                validas, tentativa + 1, max_tentativas, query, karaoke_only,
+            )
+            time.sleep(1.5)
+    else:
+        logging.warning(
+            "[V90.2 BUSCA RETRY ESGOTADAS] 3 tentativas todas <5 linhas validas. "
+            "query=%r karaoke_only=%r bytes=%d ult_exc=%r",
+            query, karaoke_only, len(last_output_bytes), last_exc,
+        )
+
+    output = last_output_bytes.decode("utf-8", "ignore")
     logging.debug("Search results (one pass) length: %d bytes", len(output))
-    scored_results: list[tuple[int, list[str]]] = []
-    for line in output.split("\n"):
+    scored_results = []
+    for line in output.splitlines():
         if len(line) <= 2:
             continue
         try:
@@ -757,43 +911,36 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
         _v_id = str(j.get("id") or "").strip()
         if not _v_id:
             continue
-        # [V52 HOTFIX URL DUPLICADA]
-        # JAMAIS usa j["url"]! Varia por versao yt-dlp (as vezes eh so o ID,
-        # as vezes URL completa, depois alguem concatena prefixo -> bug URL
-        # duplicada). Solucao 100% correta: monta URL por ID via normalizador.
         _v_url = normalize_youtube_url_to_std(_v_id)
         channel = j.get("channel") or j.get("uploader") or ""
         duration_raw = j.get("duration")
         duration_str = ""
+        seconds = -1
         if isinstance(duration_raw, (int, float)):
             seconds = int(duration_raw)
-            duration_str = f"{seconds // 60}:{seconds % 60:02d}"
+            duration_str = str(seconds // 60) + ":" + format(seconds % 60, "02d")
         row = [str(j["title"]), _v_url, _v_id, str(channel), duration_str]
 
-        # [V75 CORRECAO FATAL DO FILTRO KARAOKE]:
-        # ANTES: score podia ficar >0 pq o nome do artista (ex: "jose") estava
-        # no titulo de um VIDEO DE IGREJA / NOTICIA / VLOG, e o filtro karaoke
-        # "score>0" DEIXAVA PASSAR (bug). AGORA:
-        # Se karaoke_only=True E is_likely_karaoke_result() retorna False
-        # (nenhuma keyword POSITIVA encontrada, ou tem keyword NEGATIVA sem
-        # positiva para compensar) → REMOVE TOTALMENTE, NAO IMPORTA SCORE!
-        # (Ex.: "Pastor Jose Carlos..." nao tem "karaoke" no titulo/canal,
-        # tem "pastor" negativa → is_likely_karaoke_result = False → REMOVIDO)
         if karaoke_only:
             if not is_likely_karaoke_result(row[0], str(channel)):
                 continue
+            if seconds >= 0:
+                if seconds < 90 or seconds > 600:
+                    continue
 
         score = _score_search_result(row[0], str(channel), query, karaoke_only)
         scored_results.append((score, row))
 
     if karaoke_only:
-        karaoke_matches = [row for score, row in scored_results if score > 0]
+        karaoke_matches = [row for score, row in scored_results if score >= -10]
         if karaoke_matches:
-            scored_results = [(score, row) for score, row in scored_results if score > 0]
+            scored_results = [
+                (score, row) for score, row in scored_results if score >= -10
+            ]
 
     scored_results.sort(key=lambda item: item[0], reverse=True)
-    return [row for _, row in scored_results[: (30 if karaoke_only else 25)]]
-
+    cap = 30 if karaoke_only else 25
+    return [row for _, row in scored_results[:cap]]
 
 def _v90_helper_extract_itag(candidate: str) -> str:
     """Extrai o parametro ?itag= de uma URL googlevideo.com (usada p/ decidir safe)."""

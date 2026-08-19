@@ -2075,6 +2075,29 @@
 			<small><i>'{{search_string}}'</i></small>
 			{%- endtrans %}
 		</label>
+		{# [V90.2 CORRECAO BANNER AMARELO UI FALLBACK BUSCA GERAL]
+			Se karaoke_only=True e resultados vieram do FALLBACK NIVEL 3 (busca GERAL SEM
+			filtro, pois NIVEL 1 e 2 SO KARAOKE retornaram 0) — MOSTRA AQUI um aviso
+			AMARELO EXPLICANDO AO USUARIO. Assim ele NAO ACHA que "busca quebrou" e
+			tambem NAO ACHA que "esses videos sao todos karaoke". Fica transparente. #}
+		{% if search_fallback_level|int >= 3 %}
+		<div class="notification is-warning is-size-6 py-2 px-3 mb-3" id="v90-fallback-banner">
+			⚠️ &nbsp; <b>Modo "Só Karaokê" não encontrou nenhum resultado</b> para
+			<i>"{{ search_string }}"</i> — exibindo <b>{{ search_fallback_count }} resultados GERAL (todos os vídeos)</b>
+			para não deixar a tela vazia.
+			{% if search_fallback_count > 0 %}
+				<br /><small class="has-text-grey-dark">
+					👉 Dica: adicione "karaoke" na busca (ex.: <b>"{{ search_string }} karaoke"</b>)
+					para pegar playback/instrumental automaticamente.
+				</small>
+			{% endif %}
+		</div>
+		{% elif search_fallback_level|int == 2 %}
+		<div class="notification is-info is-size-7 py-2 px-3 mb-3" id="v90-fallback-banner">
+			ℹ️ &nbsp; Modo "Só Karaokê": não encontramos vídeos com a palavra "karaoke" no título,
+			mas exibimos <b>{{ search_fallback_count }} vídeos compatíveis</b> (playback/letra/instrumental etc.).
+		</div>
+		{% endif %}
 		<div class="field">
 			<label class="checkbox is-flex is-align-items-center">
 				<input type="checkbox" checked id="add-to-queue-search" class="checkbox" />
