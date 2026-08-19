@@ -1300,68 +1300,55 @@
 				main.classList.remove("playing");
 				// [V76 BUG CRITICO TELA PRETA]: Zere inline style de iframe (nao force block via inline!)
 				if (iframe) { iframe.style.display = ""; iframe.src = "about:blank"; }
+				// [V90.1 CORRECAO: Pausar o stream player tambem (se estava tocando via botao azul)]
+				var spPP = document.getElementById("yp-stream-player");
+				if (spPP) {
+					try { spPP.pause(); } catch(e){}
+					try { spPP.removeAttribute("src"); } catch(e){}
+					try { spPP.load(); } catch(e){}
+					try { spPP.classList.remove("show"); spPP.style.display = ""; } catch(e){}
+				}
+				var mainPP = document.getElementById("yp-main");
+				if (mainPP) mainPP.classList.remove("yp-stream-active");
+				var ssPP = document.getElementById("yp-stream-status");
+				if (ssPP) { ssPP.style.display = "none"; ssPP.className = "tag"; ssPP.textContent = ""; }
 			} else {
-				// Play: carrega iframe YouTube embed com autoplay
-				// [V78 BUG OVERLAY AMARELO INDEVIDO]: Se ja existe timeout de play anterior, cancela
+				// [V90.1 CORRECAO DEFINITIVA: CLIQUE NA TELA = MESMA COISA DO BOTAO AZUL!
+				//  O iframe youtube.com/embed NORMAL eh BLOQUEADO em 90% dos videos de
+				//  karaoke (overlay amarelo, usuario acha que "nao funciona").
+				//  SOLUCAO: Ao inves de carregar iframe separado, INVOCA DIRETAMENTE
+				//  yp_ouvirAquiStreamUrl() - a MESMA funcao do botao 🔵 OUVIR AQUI
+				//  que tem FALLBACK INVENCIVEL (stream yt-dlp e, se falhar, iframe
+				//  youtube-nocookie DENTRO do app). AGORA OS DOIS FUNCIONAM SEMPRE!]
 				if (_yp_embedBlockedTimeoutId) {
 					clearTimeout(_yp_embedBlockedTimeoutId);
 					_yp_embedBlockedTimeoutId = null;
 				}
 				yp_current.playing = true;
 				main.classList.add("playing");
-				// [V76]: NÃO FORCE iframe.style.display = "block" inline!
-				// O CSS #yp-main.playing iframe { display:block } JA FAZ ISSO
-				// (evita tela preta quando usuario pausar pois inline style nao volta)
-				if (iframe) { iframe.style.display = ""; }
-				// [V67]: PARAMS MELHORES para iframe YouTube
-				//   - removi origin= (as vezes bloqueia embedding em videos com restricao)
-				//   - enablejsapi=1: permite API
-				//   - playsinline=1: toca inline (mobile/desktop)
-				//   - iv_load_policy=3: desliga anotacoes
-				//   - cc_load_policy=0: nao carrega legendas auto
-				//   - fs=1: permite fullscreen
-				//   - rel=0: soh videos do mesmo canal (menos spam)
-				if (iframe) {
-					iframe.src = "https://www.youtube.com/embed/" + yp_current.id
-						+ "?autoplay=1&rel=0&controls=1&playsinline=1&enablejsapi=1"
-						+ "&iv_load_policy=3&cc_load_policy=0&fs=1&modestbranding=1";
+				// Esconde overlay amarelo (nao vamos mais usar o iframe velho bloqueado)
+				var ovv = document.getElementById("yp-embed-blocked-overlay");
+				if (ovv) ovv.style.display = "none";
+				var thb = document.getElementById("yp-thumb");
+				if (thb) thb.style.opacity = "1";
+				// Chama a funcao INVINCIVEL do botao azul (stream yt-dlp + fallback nocookie)
+				// com try/catch ultra seguro:
+				try {
+					if (typeof yp_ouvirAquiStreamUrl === "function") {
+						var promessa = yp_ouvirAquiStreamUrl();
+						if (promessa && typeof promessa.catch === "function") {
+							promessa.catch(function (errFun) {
+								console.error("yp_playPause chamou streamUrl e deu erro (fallback jah foi chamado dentro):", errFun);
+							});
+						}
+					} else {
+						console.error("yp_ouvirAquiStreamUrl nao existe (impossivel, V90)");
+						yp_v90_playFallbackEmbed("funcao streamUrl nao encontrada");
+					}
+				} catch (errPlay) {
+					console.error("try/catch yp_playPause streamUrl falhou:", errPlay);
+					yp_v90_playFallbackEmbed("trycatch play: " + String(errPlay && errPlay.message ? errPlay.message : errPlay));
 				}
-				// [V75 HOTFIX OVERLAY BLOQUEADO + V76 + V78]:
-				// Muitos videos de karaoke tem embedding desabilitado. O iframe YT
-				// retorna "Video indisponível" mas nao manda NENHUM evento cross-origin
-				// para o nosso script (nao tem como detectar on/off error).
-				// SOLUCAO: Se depois de 2.8 segundos o iframe AINDA esta no mesmo
-				// SRC embed (nao ocorreu redirect / erro cross-origin detectavel),
-				// mostra o overlay AMARELO amigavel explicando: use os botoes ABAIXO!
-				var ytIdNow = yp_current.id;
-				// [V78 BUG CRITICO]: Guardar o ID do timeout para poder cancelar em
-				// yp_setPreview / reset / pause (evita que ele rode em video NOVO!)
-				_yp_embedBlockedTimeoutId = setTimeout(function () {
-					_yp_embedBlockedTimeoutId = null;
-					// [V78 VERIFICACAO DE FERRO 1]: O usuario JA mudou de video?
-					if (!yp_current.id || yp_current.id !== ytIdNow) return;
-					// [V78 VERIFICACAO DE FERRO 2]: AINDA estamos realmente em modo iframe?
-					//             (se main NAO TEM a classe .playing, usuario NAO clicou
-					//              ou ja pausou. NUNCA mostrar overlay neste caso.)
-					if (!main.classList.contains("playing")) return;
-					// [V78 VERIFICACAO DE FERRO 3]: nao esta playing no JS bool?
-					if (!yp_current.playing) return;
-					// [V78 VERIFICACAO DE FERRO 4]: iframe about:blank (foi pausado)?
-					if (iframe && iframe.src === "about:blank") return;
-					// [V78 VERIFICACAO DE FERRO 5]: STREAM PLAYER (ouvir aqui) esta ativo?
-					//             neste caso o iframe nem importa (stream nao usa iframe)
-					var spNow = document.getElementById("yp-stream-player");
-					if (spNow && spNow.src && spNow.src !== "" && spNow.src !== "about:blank") return;
-					if (main.classList.contains("yp-stream-active")) return;
-					// [V78 VERIFICACAO DE FERRO 6]: overlay ja esta sendo exibido?
-					var ovNow = document.getElementById("yp-embed-blocked-overlay");
-					if (!ovNow) return;
-					// TUDO VERIFICA PASSOU: iframe bloqueado real, usuario clicou play.
-					ovNow.style.display = "block";
-					// Reduz opacidade da thumb so temporariamente (quando usuario pausar ou
-					// trocar video, o reset ja volta para 1)
-					try { document.getElementById("yp-thumb").style.opacity = "0.1"; } catch(e){}
-				}, 2800);
 			}
 		}
 
