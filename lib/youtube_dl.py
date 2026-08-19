@@ -724,19 +724,41 @@ def get_stream_url(video_url: str) -> str | None:
        Resultado no player HTML5: IMAGEM APARECIA NORMAL (tocava quadro a quadro),
        MAS NAO SAIA NENHUM AUDIO (exatamente o bug que o usuario reportou V77!).
 
-       Formato NOVO (garante 1 arquivo PROGRESSIVO com VIDEO + AUDIO JUNTOS):
+    [V79 BUG VIDEO NAO APARECE (audio veio, video nao) - CORRECAO GRAVE]:
+       Formato V77 (BUGADO):
            best[ext=mp4][acodec!=none][vcodec!=none]/worst[ext=mp4][acodec!=none]/mp4/best
-       Ordem de prioridade:
-         1) Melhor MP4 progressivo (1 arquivo) que TEM video E audio (ambos != none).
-         2) Pior MP4 progressivo (1 arquivo) que PELO MENOS tem audio (acodec!=none).
-         3) Fallback "mp4" generico (yt-dlp escolhe).
-         4) Ultimo recurso "best" (qualquer um).
-       Nunca mais vai cair em Video Only (sem audio) ou Audio Only (sem video)!
+       ⚠️ PROBLEMA: itens 2, 3 e 4 NAO TINHAM [vcodec!=none]!
+       Entao se o video nao TIVESSE MP4 progressivo "best" (item 1), caia no
+       "worst[ext=mp4][acodec!=none]" - este FILTRO SO EXIGE AUDIO, nao video!
+       yt-dlp retornava AUDIO ONLY (m4a em container mp4, vcodec=NONE)
+       = exatamente o bug reportado agora V79: "audio veio, video nao"!
+
+       Formato V79 CORRETO (TODOS OS ITENS GARANTEM AMBOS OS CODECS!):
+           best[ext=mp4][acodec!=none][vcodec!=none]
+           /worst[ext=mp4][acodec!=none][vcodec!=none]
+           /best[ext=webm][acodec!=none][vcodec!=none]
+           /worst[ext=webm][acodec!=none][vcodec!=none]
+           /best[acodec!=none][vcodec!=none]
+       Ordem de prioridade (TODOS exigem acodec!=none E vcodec!=none, nunca DASH separado!):
+         1) Melhor MP4 progressivo H.264 (Chrome suporta nativamente, 1 arquivo com os dois).
+         2) Pior MP4 progressivo (qualidade baixa, mas tem VIDEO + AUDIO JUNTOS).
+         3) Melhor WebM (VP8/VP9, Chrome tambem suporta nativamente, 1 arquivo com os dois).
+         4) Pior WebM (ultima opcao webm).
+         5) Ultimo recurso: MELHOR QUALQUER extensao/formato DESDE QUE tenha AMBOS codecs.
+       Com V79 NUNCA MAIS vai cair em Video Only (sem audio - V77) NEM Audio Only (sem video - V79)!
     """
     safe_url = normalize_youtube_url_to_std(video_url)
+    # [V79 CORRECAO GRAVE]: TODOS os 5 filtros GARANTEM AMBOS os codecs (acodec E vcodec)!
+    v79_format = (
+        "best[ext=mp4][acodec!=none][vcodec!=none]"
+        "/worst[ext=mp4][acodec!=none][vcodec!=none]"
+        "/best[ext=webm][acodec!=none][vcodec!=none]"
+        "/worst[ext=webm][acodec!=none][vcodec!=none]"
+        "/best[acodec!=none][vcodec!=none]"
+    )
     cmd = (
         yt_dlp_cmd
-        + ["-g", "-f", "best[ext=mp4][acodec!=none][vcodec!=none]/worst[ext=mp4][acodec!=none]/mp4/best"]
+        + ["-g", "-f", v79_format]
         + _js_runtime_args()
     )
     cmd += [safe_url]
