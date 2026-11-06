@@ -1,0 +1,29 @@
+# SmartokePy — dependencias Python
+# Fork customizado do PiKaraoke (https://github.com/vicwomg/pikaraoke)
+#
+# Instalar:
+#   pip install -r requirements.txt
+#
+# Requisitos de SISTEMA (nao pip):
+#   - ffmpeg + ffprobe (binarios no PATH)
+#   - Python 3.10+ recomendado
+
+flask
+Flask-Babel
+flask-paginate
+flask-smorest
+Flask-SocketIO
+simple-websocket
+gevent
+gevent-websocket
+marshmallow
+psutil
+qrcode
+requests
+urllib3
+ffmpeg-python
+yt-dlp
+
+# Opcional: microphone passthrough experimental (lib/sound_manager.py)
+# Descomente se for usar:
+# sounddevice

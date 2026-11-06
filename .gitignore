@@ -43,3 +43,6 @@ _install_nodejs_*.py
 cookies-youtube.txt
 youtube-guest-cookies.txt
 
+
+# Binarios de backup/release (nao versionar):
+*.tar.gz

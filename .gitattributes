@@ -1,0 +1,19 @@
+# Normalizacao de fim de linha: texto sempre LF (igual ao repo, mesmo no Windows)
+* text=auto eol=lf
+
+# Binarios: nunca tocar
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.svg binary
+*.mo binary
+*.mp3 binary
+*.mp4 binary
+*.wasm binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.eot binary
+*.tar.gz binary
