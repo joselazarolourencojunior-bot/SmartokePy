@@ -49,7 +49,7 @@ youtube-guest-cookies.txt
 
 # Artefatos locais do Dell (venv, backups pre-patch, snapshots de seguranca):
 .venv/
-.pre_*
+*.pre_*
 *.precfpatch_*
-*.bak.*
+*.bak*
 *.ndjson
