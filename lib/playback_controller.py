@@ -54,7 +54,7 @@ class PlaybackController:
     PRELOAD_ENABLED: bool = True           # pre-transcode das proximas musicas (janela)
     # --- Novos para scheduler multi-preload ---
     PRELOAD_WINDOW_MAX: int = 2            # Dell antigo 3GB RAM: JANELA MINIMA (so 2 proximas). Antes era 5, estourava RAM/SWAP.
-    MAX_PARALLEL_PRELOADS: int = 1         # 1 = seguro para Dell antigo (nao trava CPU). NUNCA > 2.
+    MAX_PARALLEL_PRELOADS: int = 2         # 2 = ok com 18GB RAM (era 1 na era 4GB). NUNCA > 2.
     PRELOAD_STATUS_LABELS: dict[str, str] = {
         "unknown":     "Aguardando",
         "queued":      "Na fila para carregar",

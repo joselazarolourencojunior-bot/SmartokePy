@@ -8,7 +8,7 @@ Roda em producao num **Dell OptiPlex 7010** (Ubuntu, 4GB RAM) servindo na porta 
 
 - **Busca YouTube "nunca vazia"**: filtros hard/soft de palavras-chave (keywords positivas de karaoke/sertanejo, negativas hard como igreja/shorts/noticias), filtro de duracao 90s–600s, retry automatico em stdout vazio (rate limit), fallback em 3 niveis com banner no frontend.
 - **Player de preview/stream robusto**: selecao de formatos com `acodec!=none` + `vcodec!=none` garantidos (nunca audio-only nem video-only), User-Agent Chrome fixo para evitar HTTP 403 do YouTube, fallback WebM.
-- **Preload de transcode HLS**: FFmpeg transcodifica as proximas musicas da fila em background (`window_size=2`, `max_parallel=1` — ajustado para 4GB RAM), com LEDs de status na fila (cinza/amarelo/verde/vermelho) e reparo automatico de transcode morto via evento `playback_stream_url_changed`.
+- **Preload de transcode HLS**: FFmpeg transcodifica as proximas musicas da fila em background (`window_size=2`, `max_parallel=2` — apos upgrade para 18GB RAM; era 1 na era 4GB), com LEDs de status na fila (cinza/amarelo/verde/vermelho) e reparo automatico de transcode morto via evento `playback_stream_url_changed`.
 - **Fila de cantores** ("lei da vez"): rotacao de cantores com regras anti-pulo.
 - **Network Maestro**: app auxiliar de gerenciamento de WiFi/rede (`network_maestro_app.py`), ver `NETWORK_MAESTRO.md`.
 - **WiFi Setup** e sincronizacao de rede Dell/Raspberry (`lib/dell_wifi_sync.py`, `lib/raspi_wifi_config.py`).

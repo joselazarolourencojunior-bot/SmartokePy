@@ -1039,7 +1039,7 @@ class Karaoke:
 
                 # --- NOVO: Mantem JANELA DE 5 PRELOADS sempre atualizada ---
                 # Substitui o preload_next(queue[0]) unico anterior: agora temos as 5 proximas
-                # prontas em background, MAX_PARALLEL=1 (Dell seguro, sem travar a musica atual).
+                # prontas em background, MAX_PARALLEL=2 (18GB RAM; era 1 na era 4GB).
                 q = self.queue_manager.queue
                 if len(q) > 0:
                     from pikaraoke.lib.queue_manager import QueueManager as _QM
