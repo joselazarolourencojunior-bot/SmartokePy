@@ -46,3 +46,10 @@ youtube-guest-cookies.txt
 
 # Binarios de backup/release (nao versionar):
 *.tar.gz
+
+# Artefatos locais do Dell (venv, backups pre-patch, snapshots de seguranca):
+.venv/
+.pre_*
+*.precfpatch_*
+*.bak.*
+*.ndjson

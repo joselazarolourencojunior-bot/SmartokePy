@@ -30,15 +30,20 @@ if _HAS_PACTL and not os.environ.get("XDG_RUNTIME_DIR"):
         os.environ["XDG_RUNTIME_DIR"],
     )
 
-# sounddevice is only needed on non-Linux platforms
+# sounddevice: import protegido contra crash headless (systemd / sem PulseAudio)
 _SOUNDDEVICE_AVAILABLE = False
-if not _HAS_PACTL:
-    try:
-        import sounddevice as sd
-
-        _SOUNDDEVICE_AVAILABLE = True
-    except (ImportError, OSError):
-        pass
+sd = None  # type: ignore
+CallbackStop = Exception  # fallback se sd indisponivel
+CallbackAbort = Exception  # fallback se sd indisponivel
+try:
+    import sounddevice as sd  # noqa: F401
+    _SOUNDDEVICE_AVAILABLE = True
+    from sounddevice import CallbackStop as _CS, CallbackAbort as _CA
+    CallbackStop = _CS
+    CallbackAbort = _CA
+except Exception as _sd_err:
+    import warnings
+    warnings.warn(f"sounddevice nao carregou: {_sd_err}")
 
 _MAX_GAIN = 1.0
 _DEFAULT_LATENCY_MS = 10
