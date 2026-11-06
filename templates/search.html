@@ -294,6 +294,35 @@
 	}
 
 	/* ============================================================
+	   V91: PAINEL ARRASTAVEL (alca no topo, posicao persiste)
+	   ============================================================ */
+	#yp-drag-handle {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		cursor: move;
+		user-select: none;
+		-webkit-user-select: none;
+		touch-action: none;
+		color: #9a9a9a;
+		font-size: 0.68rem;
+		letter-spacing: 1px;
+		padding: 1px 0 6px 0;
+		margin: -2px 0 6px 0;
+		border-bottom: 1px solid #333;
+	}
+	#yp-drag-handle:hover { color: #d5d5d5; }
+	#youtube-preview-panel.yp-dragging {
+		opacity: 0.85;
+		transition: none;
+		box-shadow: 0 12px 34px rgba(0, 0, 0, 0.7);
+	}
+	@media (max-width: 1099px) {
+		#yp-drag-handle { display: none; }
+	}
+
+	/* ============================================================
 	   V74: REMOVIDO layout 2 COLUNAS do V69 (era bagunca).
 	   VOLTAMOS layout 1 COLUNA global, preview FIXO canto sup dir.
 	   ============================================================ */
@@ -1950,6 +1979,62 @@
 		$("#youtube-thumb").attr("src", img_src);
 	}
 
+	/* ============================================================
+	   V91: PAINEL YOUTUBE-PREVIEW ARRASTAVEL
+	   Arraste pela alca no topo para mover; posicao persiste em
+	   localStorage. So atua quando o painel esta position:fixed
+	   (telas >=1100px).
+	   ============================================================ */
+	(function () {
+		var panel = document.getElementById("youtube-preview-panel");
+		var handle = document.getElementById("yp-drag-handle");
+		if (!panel || !handle) return;
+		var drag = null;
+
+		function clamp(v, lo, hi) {
+			return Math.max(lo, Math.min(hi, v));
+		}
+		function isFixed() {
+			return window.getComputedStyle(panel).position === "fixed";
+		}
+
+		try {
+			var saved = JSON.parse(localStorage.getItem("ypPanelPos") || "null");
+			if (saved && typeof saved.left === "number" && isFixed()) {
+				panel.style.left = saved.left + "px";
+				panel.style.top = saved.top + "px";
+				panel.style.right = "auto";
+			}
+		} catch (e) {}
+
+		handle.addEventListener("pointerdown", function (ev) {
+			if (!isFixed()) return;
+			var r = panel.getBoundingClientRect();
+			drag = { dx: ev.clientX - r.left, dy: ev.clientY - r.top };
+			panel.classList.add("yp-dragging");
+			try { handle.setPointerCapture(ev.pointerId); } catch (e) {}
+			ev.preventDefault();
+		});
+		handle.addEventListener("pointermove", function (ev) {
+			if (!drag) return;
+			var r = panel.getBoundingClientRect();
+			panel.style.left = clamp(ev.clientX - drag.dx, 4, window.innerWidth - r.width - 4) + "px";
+			panel.style.top = clamp(ev.clientY - drag.dy, 4, window.innerHeight - 40) + "px";
+			panel.style.right = "auto";
+		});
+		function endDrag() {
+			if (!drag) return;
+			drag = null;
+			panel.classList.remove("yp-dragging");
+			try {
+				var r = panel.getBoundingClientRect();
+				localStorage.setItem("ypPanelPos", JSON.stringify({ left: r.left, top: r.top }));
+			} catch (e) {}
+		}
+		handle.addEventListener("pointerup", endDrag);
+		handle.addEventListener("pointercancel", endDrag);
+	})();
+
 	function restoreCheckboxStates() {
 		// Restore "Include non-karaoke matches" checkbox state
 		var includeNonKaraoke = Cookies.get("include-non-karaoke");
@@ -2149,6 +2234,7 @@
    ============================================================ #}
 <div class="v73-preview-area" style="width: 100%; display: block; clear: both;">
 	<div id="youtube-preview-panel">
+				<div id="yp-drag-handle" title="Arraste para mover o painel">&#10239; arraste para mover</div>
 				<div id="yp-empty">
 					👇 Passe o mouse sobre os resultados de busca abaixo para ver a CAPA DO YOUTUBE do vídeo aqui.
 					<br /><small>Clique na capa para TOCAR um trecho / vídeo completo (YouTube Embed) — clique de novo para PARAR.</small>
