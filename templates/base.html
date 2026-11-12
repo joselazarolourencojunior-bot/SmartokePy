@@ -173,6 +173,13 @@
               '<button class="delete" aria-label="close" onclick="document.body.removeChild(document.getElementById(\''+MODAL_ID+'\'))"></button>' +
             '</header>' +
             '<section class="modal-card-body" style="padding: 0; overflow-y:auto;">' +
+              /* V95: campo para digitar o nome direto no pop-up (antes so havia window.prompt) */
+              (showCustom ? '<div style="padding: 14px 14px 4px 14px;">' +
+                '<input id="'+MODAL_ID+'_input" class="input" type="text" maxlength="60" autocomplete="off" ' +
+                'placeholder="'+(multi ? 'Digite nomes separados por virgula' : 'Digite seu nome aqui')+'" />' +
+                '<p style="font-size:12px; opacity:.75; margin:6px 2px 0 2px;">Digite e aperte Enter ou OK' +
+                (multi ? '' : ', ou clique num nome abaixo') + '.</p>' +
+              '</div>' : '') +
               '<div id="'+MODAL_ID+'_list" style="padding: 10px;">' +
                 '<p style="opacity:.7; text-align:center; padding: 30px 0;">⏳ Carregando nomes disponíveis...</p>' +
               '</div>' +
@@ -181,7 +188,6 @@
               '<div>'+selcount_html+'</div>' +
               '<div class="is-flex is-gap-1">' +
                 '<button class="button" onclick="document.body.removeChild(document.getElementById(\''+MODAL_ID+'\'))" style="margin-right:8px;">Cancelar</button>' +
-                '<button class="button is-info" id="'+MODAL_ID+'_customBtn">Digitar outro nome</button>' +
                 '<button class="button is-success" id="'+MODAL_ID+'_okBtn" '+okbtn_style+' >OK</button>' +
               '</div>' +
             '</footer>' +
@@ -194,20 +200,20 @@
       var listEl = document.getElementById(MODAL_ID+"_list");
       var okBtn = document.getElementById(MODAL_ID+"_okBtn");
       var countEl = document.getElementById(MODAL_ID+"_selcount");
-      var customBtn = document.getElementById(MODAL_ID+"_customBtn");
-      if (!showCustom) customBtn.style.display = "none";
+      var inputEl = document.getElementById(MODAL_ID+"_input");
+      if (!multi && !showCustom && okBtn) okBtn.style.display = "none";
       function fechar() { try { document.body.removeChild(document.getElementById(MODAL_ID)); } catch(e){} }
       function updateCount() {
         if (!multi || !countEl) return;
         var n = selectedSet.size;
         countEl.textContent = n + " selecionado"+(n===1?"":"s");
-        okBtn.style.display = (n>0 ? "" : "none");
+        okBtn.style.display = ((n>0 || (inputEl && inputEl.value.trim())) ? "" : "none");
       }
       function render(data) {
         var reg = (data && Array.isArray(data.registered_singers)) ? data.registered_singers : [];
         var unm = (data && Array.isArray(data.unmatched_queue_users)) ? data.unmatched_queue_users : [];
         if ((!reg.length) && (!unm.length)) {
-          listEl.innerHTML = '<p style="opacity:.7;text-align:center;padding:30px 0;">Nenhum nome disponível ainda. Clique em "Digitar outro nome".</p>';
+          listEl.innerHTML = '<p style="opacity:.7;text-align:center;padding:30px 0;">Nenhum cantor cadastrado ainda. Digite seu nome no campo acima e clique em OK.</p>';
           updateCount(); return;
         }
         // (A) Secao 1: Cantores cadastrados (com aliases)
@@ -304,27 +310,27 @@
         });
         updateCount();
       }
-      customBtn.addEventListener("click", function(){
-        var msg = multi ? "Digite um ou mais nomes, separados por vírgula:" : "Digite o nome manualmente:";
-        var init = multi ? (Array.from(selectedSet).join(", ") || initial || "") : (initial || "");
-        var v = window.prompt(msg, init);
-        if (v === null) return;
-        v = String(v).trim();
-        if (!v) return;
+      // V95: OK confirma o nome digitado (1 nome) ou junta digitados + selecionados (multi).
+      function confirmar() {
+        var typed = inputEl ? inputEl.value.trim() : "";
         if (multi) {
-          v.split(/[,;]/).map(function(x){return x.trim();}).filter(Boolean).forEach(function(p){ selectedSet.add(p); });
-          updateCount();
-          try { render(window.__SINGERS_CACHE); } catch(e){}
-        } else {
-          fechar(); opts.onSelect(v);
-        }
-      });
-      if (okBtn && multi) {
-        okBtn.addEventListener("click", function(){
-          if (!selectedSet.size) return;
+          if (typed) typed.split(/[,;]/).map(function(x){return x.trim();}).filter(Boolean).forEach(function(p){ selectedSet.add(p); });
+          if (!selectedSet.size) { if (inputEl) inputEl.focus(); return; }
           var val = Array.from(selectedSet).join(", ");
-          fechar(); opts.onSelect(val);
-        });
+          fechar(); opts.onSelect(val); return;
+        }
+        if (!typed) {
+          if (inputEl) { inputEl.classList.add("is-danger"); inputEl.focus(); }
+          return;
+        }
+        fechar(); opts.onSelect(typed);
+      }
+      if (okBtn) okBtn.addEventListener("click", confirmar);
+      if (inputEl) {
+        if (!multi && initial) inputEl.value = initial;
+        inputEl.addEventListener("keydown", function(e){ if (e.key === "Enter") { e.preventDefault(); confirmar(); } });
+        inputEl.addEventListener("input", function(){ inputEl.classList.remove("is-danger"); updateCount(); });
+        setTimeout(function(){ try { inputEl.focus(); } catch(e){} }, 50);
       }
       __pickFetchSingers().then(render);
     }
@@ -413,7 +419,7 @@
         // Botao "Digitar outro nome" no rodabre abre o prompt() como fallback.
         showSingersPickerModal({
           title: "Quem esta adicionando musica agora?",
-          subtitle: "Clique no NOME EXATO abaixo (nao precisa digitar nada! Apelidos aparecem separados).",
+          subtitle: "Digite seu nome ou clique nele na lista abaixo.",
           multi: false,
           showCustomBtn: true,
           onSelect: function(name) {
@@ -437,7 +443,7 @@
       if (user) { try { callback(user); } catch(e){ console.error(e); } return; }
       showSingersPickerModal({
         title: "Quem esta adicionando musica agora?",
-        subtitle: "Clique no NOME EXATO abaixo (nao precisa digitar nada! Apelidos aparecem separados).",
+        subtitle: "Digite seu nome ou clique nele na lista abaixo.",
         multi: false,
         showCustomBtn: true,
         onSelect: function(name) {
