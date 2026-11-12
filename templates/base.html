@@ -547,6 +547,10 @@
   .navbar-item > i {
     margin-right: 2px;
   }
+  /* V93: pop-ups abertos ficam ACIMA DE TUDO. O painel de preview do
+     YouTube (z-index 900000) e a busca Selectize (999998/999999) ficavam
+     por cima do fundo escuro do pop-up e misturavam com ele. */
+  .modal.is-active { z-index: 2147483000 !important; }
   .base-notification {
     position: fixed;
     width: 500px;
