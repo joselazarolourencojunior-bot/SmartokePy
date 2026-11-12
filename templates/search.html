@@ -1985,10 +1985,15 @@
 	   localStorage. So atua quando o painel esta position:fixed
 	   (telas >=1100px).
 	   ============================================================ */
-	(function () {
+	/* V96: este script fica no <head>. Num carregamento normal da pagina (ou
+	   Ctrl+Shift+R) ele rodava antes de o painel existir e o arrasto nunca
+	   ligava; so funcionava chegando pela navegacao do menu. $(fn) espera o
+	   DOM (e roda na hora se ele ja estiver pronto). */
+	$(function () {
 		var panel = document.getElementById("youtube-preview-panel");
 		var handle = document.getElementById("yp-drag-handle");
-		if (!panel || !handle) return;
+		if (!panel || !handle || handle.__ypDragOn) return;
+		handle.__ypDragOn = true;
 		var drag = null;
 
 		function clamp(v, lo, hi) {
@@ -2033,7 +2038,7 @@
 		}
 		handle.addEventListener("pointerup", endDrag);
 		handle.addEventListener("pointercancel", endDrag);
-	})();
+	});
 
 	function restoreCheckboxStates() {
 		// Restore "Include non-karaoke matches" checkbox state
