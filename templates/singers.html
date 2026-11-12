@@ -245,6 +245,28 @@
 
     window.__singers_renderMatchBanners = function(){
       if (!window.__singers_is_on_page()) return;
+      // ===== [V92 ANTI-CINTILACAO] =====
+      // O polling de 1.5s + eventos socket reescreviam banners e cards TODA
+      // VEZ, mesmo sem nenhuma mudanca -> DOM destruido/recriado ~40x/min,
+      // causando cintilar/vibracao e restart das animacoes CSS. Agora:
+      // assinatura dos dados que afetam os banners; se nada mudou, sai SEM
+      // tocar no DOM. A assinatura fica gravada no proprio elemento, entao
+      // se a navegacao SPA recriar o DOM, o render acontece normalmente.
+      var __bsig = JSON.stringify([
+        window.__SINGERS_NOW_SINGER_ID || null,
+        window.__SINGERS_NEXT_SINGER_ID || null,
+        window.__SINGERS_NOW_QUEUE_USER || "",
+        window.__SINGERS_NEXT_QUEUE_USER || "",
+        window.__SINGERS_UNMATCHED || [],
+        ((window.__SINGERS_LAST_LIST && window.__SINGERS_LAST_LIST.singers) || []).map(function(s){
+          return [s.singer_id, s.name, s.status, s.rounds_sung];
+        })
+      ]);
+      var __banchor = document.getElementById("now-banner") ||
+                      document.getElementById("next-banner") ||
+                      document.getElementById("unmatched-banner");
+      if (__banchor && __banchor.__bannerSig === __bsig) return;
+      if (__banchor) __banchor.__bannerSig = __bsig;
       // ----- NOW BANNER (tocando agora CHAMATIVO GRANDE) -----
       var now_b = document.getElementById("now-banner");
       if (now_b){
@@ -345,6 +367,19 @@
 
       var list = (payload && payload.singers) || [];
       window.__SINGERS_LAST_LIST = payload || null;
+      // ===== [V92 ANTI-CINTILACAO] mesma ideia dos banners =====
+      // Assinatura cobre a lista + quem canta agora/proximo/unmatched
+      // (tudo que altera cards, tags de stats e banners). Sem mudanca ->
+      // return precoce, ZERO escrita no DOM.
+      var __rootEl = document.getElementById("singers-list");
+      var __rsig = JSON.stringify(payload || {}) + "|" +
+                   (window.__SINGERS_NOW_SINGER_ID || "") + "|" +
+                   (window.__SINGERS_NEXT_SINGER_ID || "") + "|" +
+                   (window.__SINGERS_NOW_QUEUE_USER || "") + "|" +
+                   (window.__SINGERS_NEXT_QUEUE_USER || "") + "|" +
+                   JSON.stringify(window.__SINGERS_UNMATCHED || []);
+      if (__rootEl && __rootEl.__renderSig === __rsig) return;
+      if (__rootEl) __rootEl.__renderSig = __rsig;
       // ===== [CORRECAO 13/08: DEFINIR nowId / nextId ANTES de usar no calls-banner!] =====
       // Antigamente eram definidos DEPOIS (na linha de map dos cards) e o calls-banner usava
       // `nextId` com valor da requisicao ANTERIOR → bug: "Simone aparece como próxima mas
