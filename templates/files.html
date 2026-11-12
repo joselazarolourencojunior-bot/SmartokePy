@@ -18,13 +18,13 @@
 			var self = this;
 			withUserCookie(function(user){
 				$.get(self.href + encodeURIComponent(user), function (data) {
-					var obj = JSON.parse(data);
-					if (obj.success[0]) {
+					var obj = JSON.parse(data); /* V94: backend responde {success: bool, message, song}; a tela lia o formato antigo success[0]/success[1] e mostrava tarja vermelha VAZIA mesmo com sucesso. */ var __ok = Array.isArray(obj.success) ? !!obj.success[0] : !!obj.success; var __msg = (Array.isArray(obj.success) ? obj.success[1] : obj.message) || (__ok ? 'Música adicionada à fila: ' + (obj.song || '') : 'Não foi possível adicionar a música à fila.');
+					if (__ok) {
 						// {# MSG: Notification when a song gets added to the queue.  The song name comes after this string. #}
-						showNotification(obj.success[1], "is-success");
+						showNotification(__msg, "is-success");
 					} else {
 						// {# MSG: Notification when a song does not get added to the queue.  The song name comes after this string. #}
-						showNotification(obj.success[1], "is-danger");
+						showNotification(__msg, "is-danger");
 					}
 				});
 			});

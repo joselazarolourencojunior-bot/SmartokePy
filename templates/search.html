@@ -916,11 +916,11 @@
 					type: "post",
 					data: $("#queue-form").serialize(),
 					success: function (data) {
-						var obj = JSON.parse(data);
-						if (obj.success[0]) {
-							showNotification(obj.success[1], "is-success");
+						var obj = JSON.parse(data); /* V94: backend responde {success: bool, message, song}; a tela lia o formato antigo success[0]/success[1] e mostrava tarja vermelha VAZIA mesmo com sucesso. */ var __ok = Array.isArray(obj.success) ? !!obj.success[0] : !!obj.success; var __msg = (Array.isArray(obj.success) ? obj.success[1] : obj.message) || (__ok ? 'Música adicionada à fila: ' + (obj.song || '') : 'Não foi possível adicionar a música à fila.');
+						if (__ok) {
+							showNotification(__msg, "is-success");
 						} else {
-							showNotification(obj.success[1], "is-danger");
+							showNotification(__msg, "is-danger");
 						}
 						$select[0].selectize.clear();
 					},
