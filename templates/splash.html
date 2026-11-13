@@ -27,6 +27,34 @@
   };
 </script>
 <script src="{{ url_for('static', filename='js/splash.js') }}?v=20260811-v11urlchange"></script>
+<script>
+  // V98: live-update the displayed URL and QR code when the server IP changes.
+  (function () {
+    function onUrlChanged(data) {
+      var url = data && data.url;
+      if (!url) return;
+      var splashText = document.getElementById("splash-url-text");
+      var screensaverText = document.getElementById("screensaver-url-text");
+      if (splashText) splashText.textContent = url;
+      if (screensaverText) screensaverText.textContent = url;
+      var qrSrc = "{{ url_for('images.qrcode') }}" + "?t=" + Date.now();
+      var splashQr = document.querySelector("#qr-code img");
+      var screensaverQr = document.querySelector("#screensaver-qr img");
+      if (splashQr) splashQr.src = qrSrc;
+      if (screensaverQr) screensaverQr.src = qrSrc;
+    }
+    function attachUrlChangedHandler() {
+      if (typeof socket !== "undefined" && socket && socket.on) {
+        socket.on("url_changed", onUrlChanged);
+        return true;
+      }
+      return false;
+    }
+    if (!attachUrlChangedHandler()) {
+      document.addEventListener("DOMContentLoaded", attachUrlChangedHandler);
+    }
+  })();
+</script>
 {% endblock %} {% block body %}
 <div id="top-container" class="overlay">
 <i class="icon icon-mic-1 is-invisible" style="position: absolute" title="Current singer"></i>
@@ -76,7 +104,7 @@
       alt="qrcode"
     />
     <div class="is-size-6 stroke">
-      <div>&nbsp;{{ url }}</div>
+      <div>&nbsp;<span id="splash-url-text">{{ url }}</span></div>
     </div>
   </div>
   <div></div>
@@ -182,7 +210,9 @@
         <div style="text-align: right">
           <img src="{{ url_for('images.qrcode') }}" width="30%" height="30%" />
         </div>
-        <div>{{ hostap_info[0] }}<br />{{ url }}</div>
+        <div>
+          {{ hostap_info[0] }}<br /><span id="screensaver-url-text">{{ url }}</span>
+        </div>
       </div>
     </div>
   </div>

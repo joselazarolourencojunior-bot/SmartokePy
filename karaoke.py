@@ -224,6 +224,7 @@ class Karaoke:
         self._sync_lock = threading.Lock()
 
         self.generate_qr_code()
+        self._start_url_watcher()
 
         # Set preferred language from command line if provided (persists to config)
         if preferred_language:
@@ -620,6 +621,38 @@ class Karaoke:
         data_dir = get_data_directory()
         self.qr_code_path = os.path.join(data_dir, f"qrcode-{self.port}.png")
         img.save(self.qr_code_path)  # type: ignore[arg-type]
+
+    def _start_url_watcher(self, interval: float = 20.0) -> None:
+        """Start a daemon thread that watches for IP/URL changes.
+
+        If the network IP changes after startup (e.g. service started before
+        DHCP, or the host moved networks), the splash URL text and QR code
+        would stay stale until restart. The watcher detects the change,
+        regenerates the QR code and notifies connected clients via socketio.
+        """
+
+        def _watch() -> None:
+            while True:
+                time.sleep(interval)
+                try:
+                    self._check_url_change()
+                except Exception as e:
+                    logging.warning(f"[V98] erro ao verificar mudanca de URL: {e}")
+
+        thread = threading.Thread(target=_watch, daemon=True)
+        thread.start()
+
+    def _check_url_change(self) -> None:
+        """One iteration of the URL watcher: update url, QR and clients on change."""
+        new = self.get_url()
+        if "//127." in new:
+            return
+        if new != self.url:
+            logging.info(f"[V98] URL mudou: {self.url} -> {new}")
+            self.url = new
+            self.generate_qr_code()
+            if self.socketio:
+                self.socketio.emit("url_changed", {"url": new}, namespace="/")
 
     def send_notification(self, message: str, color: str = "primary") -> None:
         """Send a notification to the web interface.
