@@ -399,6 +399,18 @@ class DownloadManager:
             "pause_level": self._pause_level,
         }
 
+    def get_downloads_summary(self) -> dict:
+        """[V101] Resumo leve para o contador global (sem as listas)."""
+        paused = self.is_paused()
+        active = self.active_download
+        return {
+            "remaining": len(self.pending_downloads) + (1 if active else 0),
+            "active_title": (active or {}).get("title"),
+            "active_progress": (active or {}).get("progress"),
+            "paused": paused,
+            "paused_until": self._paused_until if paused else 0.0,
+        }
+
     # ============================================================
     # [V99] PAUSA POR BLOQUEIO DO YOUTUBE + PERSISTENCIA DA FILA
     # ============================================================

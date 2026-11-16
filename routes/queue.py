@@ -335,6 +335,13 @@ def get_current_downloads():
     return json.dumps(status)
 
 
+@queue_bp.route("/queue/downloads/summary")
+def get_downloads_summary():
+    """[V101] Contador leve de downloads restantes (usado pela barra global)."""
+    k = get_karaoke_instance()
+    return json.dumps(k.download_manager.get_downloads_summary())
+
+
 @queue_bp.route("/queue/downloads/resume", methods=["POST"])
 def resume_downloads():
     """[V99] 'Tentar agora': cancela a pausa por bloqueio do YouTube e acorda o worker."""

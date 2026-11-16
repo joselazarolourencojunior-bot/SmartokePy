@@ -594,7 +594,7 @@
   <!-- [V99] Banner global: aparece em TODAS as paginas quando o YouTube
        bloqueou o Dell e os downloads estao pausados. Fica FORA do .box para
        sobreviver a navegacao SPA (spa-navigation.js so troca o .box). -->
-  <div id="download-paused-banner" style="display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 1000000; background: #d32f2f; color: #fff; padding: 6px 12px; text-align: center; font-weight: 600; font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,.4);">
+  <div id="download-paused-banner" style="display: none; position: relative; background: #d32f2f; color: #fff; padding: 6px 12px; text-align: center; font-weight: 600; font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,.4);">
     <span id="download-paused-banner-text"></span>
     <button id="download-paused-resume-btn" type="button" style="margin-left: 10px; background: #fff; color: #d32f2f; border: 0; border-radius: 4px; padding: 2px 10px; cursor: pointer; font-weight: 700;">Tentar agora</button>
   </div>
@@ -606,17 +606,34 @@
           return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
         } catch (e) { return "--:--"; }
       }
+      // [V101] Contador azul de musicas restantes; vermelho quando pausado.
+      // Fica no fluxo da pagina (acima do menu, sem cobrir nada) e nao aparece na TV.
+      var _showCounter = {{ 'false' if blank_page else 'true' }};
       function _pollDownloadPause() {
-        fetch("/queue/downloads", { cache: "no-store" })
+        fetch("/queue/downloads/summary", { cache: "no-store" })
           .then(function (r) { return r.json(); })
           .then(function (st) {
             var el = document.getElementById("download-paused-banner");
             if (!el) return;
-            if (st && st.paused) {
-              var n = (st.pending ? st.pending.length : 0) + (st.active ? 1 : 0);
-              var txt = "\u26D4 Downloads parados: o YouTube bloqueou temporariamente por excesso de downloads. Voltam automaticamente \u00E0s " + _fmtHHMM(st.paused_until) + " (" + n + " m\u00FAsicas aguardando).";
-              var span = document.getElementById("download-paused-banner-text");
+            var span = document.getElementById("download-paused-banner-text");
+            var btn = document.getElementById("download-paused-resume-btn");
+            var n = (st && st.remaining) || 0;
+            var faltam = n === 1 ? "falta 1 m\u00FAsica" : "faltam " + n + " m\u00FAsicas";
+            if (!_showCounter) {
+              el.style.display = "none";
+            } else if (st && st.paused) {
+              var txt = "\u26D4 Downloads parados: o YouTube bloqueou temporariamente por excesso de downloads. Voltam automaticamente \u00E0s " + _fmtHHMM(st.paused_until) + " (" + faltam + " para baixar).";
               if (span) span.textContent = txt;
+              if (btn) btn.style.display = "";
+              el.style.background = "#d32f2f";
+              el.style.display = "block";
+            } else if (n > 0) {
+              var agora = st.active_title
+                ? " \u2014 agora: " + st.active_title + (st.active_progress ? " (" + Math.round(st.active_progress) + "%)" : "")
+                : "";
+              if (span) span.textContent = "\u2B07 Baixando: " + faltam + agora;
+              if (btn) btn.style.display = "none";
+              el.style.background = "#1565c0";
               el.style.display = "block";
             } else {
               el.style.display = "none";
@@ -635,7 +652,7 @@
           });
         }
         _pollDownloadPause();
-        setInterval(_pollDownloadPause, 30000);
+        setInterval(_pollDownloadPause, 15000);
       }
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", _initDownloadPauseBanner);
