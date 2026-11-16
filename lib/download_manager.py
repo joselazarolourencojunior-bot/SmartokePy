@@ -45,6 +45,10 @@ class DownloadManager:
     # com SUCESSO reseta o nivel para 0. "Tentar agora" (resume_now) limpa a
     # pausa MAS mantem o nivel (o proximo bloqueio continua a escalada).
     PAUSE_STEPS_SECONDS: list[int] = [1 * 3600, 2 * 3600, 4 * 3600, 8 * 3600]
+    # [V104] Mesmo durante a pausa longa, o worker TESTA 1 download a cada
+    # hora. Se passar, destrava a fila inteira; se o YouTube ainda estiver
+    # bloqueando, volta a dormir ate o proximo teste (sem encurtar a pausa).
+    PROBE_INTERVAL_SECONDS: float = 3600.0
     # Intervalo minimo entre um download e o proximo (espacamento para nao
     # re-triggerar o rate-limit do YouTube).
     DOWNLOAD_GAP_SECONDS: float = 30.0
@@ -342,6 +346,8 @@ class DownloadManager:
         self._paused_until: float = 0.0
         self._pause_reason: str = ""
         self._pause_level: int = 0
+        # [V104] Proximo teste automatico durante a pausa (a cada hora).
+        self._next_probe_at: float = 0.0
         self._worker_thread: Thread | None = None
         self._is_downloading: bool = False  # Track if a download is currently in progress
         self._download_stall_timeout: int = 600  # [V-DOWNLOAD-UNLOCK] Antes 180s = 3min, agora 600s = 10min. NUNCA MAIS aborta download por demora de buffering do YouTube (arquivos grandes).
@@ -411,6 +417,7 @@ class DownloadManager:
             "active_eta": (active or {}).get("eta"),
             "paused": paused,
             "paused_until": self._paused_until if paused else 0.0,
+            "next_probe_at": self._next_probe_at if paused else 0.0,
         }
 
     # ============================================================
@@ -420,6 +427,11 @@ class DownloadManager:
     def is_paused(self) -> bool:
         """True se os downloads estao pausados por bloqueio do YouTube."""
         return time.time() < self._paused_until
+
+    def _probe_due(self) -> bool:
+        """[V104] True quando chegou a hora do teste automatico de 1h
+        durante a pausa (o worker baixa 1 item para sondar o YouTube)."""
+        return self.is_paused() and 0 < self._next_probe_at <= time.time()
 
     def _queue_state_path(self) -> str:
         return os.path.join(get_data_directory(), self.QUEUE_STATE_FILENAME)
@@ -442,6 +454,7 @@ class DownloadManager:
                 "paused_until": self._paused_until,
                 "pause_reason": self._pause_reason,
                 "pause_level": self._pause_level,
+                "next_probe_at": self._next_probe_at,
             }
             path = self._queue_state_path()
             tmp_path = path + ".tmp"
@@ -468,8 +481,16 @@ class DownloadManager:
                 self._paused_until = 0.0
             self._pause_reason = str(state.get("pause_reason") or "")
             self._pause_level = int(state.get("pause_level") or 0)
+            # [V104] Se a pausa continua ativa, mantem a agenda de testes;
+            # sem valor salvo, agenda um teste em 1h.
+            self._next_probe_at = float(state.get("next_probe_at") or 0.0)
+            if self.is_paused() and not self._next_probe_at:
+                self._next_probe_at = time.time() + self.PROBE_INTERVAL_SECONDS
+            if not self.is_paused():
+                self._next_probe_at = 0.0
         except Exception:
             self._paused_until, self._pause_reason, self._pause_level = 0.0, "", 0
+            self._next_probe_at = 0.0
         seen: set[str] = set()
         loaded: list[dict] = []
         for item in state.get("pending") or []:
@@ -495,7 +516,9 @@ class DownloadManager:
 
     def pause_for_block(self, reason: str, at: float | None = None) -> None:
         """Pausa TODOS os downloads por bloqueio do YouTube (progressivo:
-        1h -> 2h -> 4h -> 8h). So estende a pausa, nunca encurta."""
+        1h -> 2h -> 4h -> 8h). So estende a pausa, nunca encurta.
+        [V104] Agenda tambem o proximo TESTE automatico em 1h, mesmo com
+        pausa maior: assim que um teste passar, a fila inteira destrava."""
         now = time.time() if at is None else at
         duration = self.PAUSE_STEPS_SECONDS[
             min(self._pause_level, len(self.PAUSE_STEPS_SECONDS) - 1)
@@ -504,6 +527,7 @@ class DownloadManager:
         with self._cv:
             self._paused_until = max(self._paused_until, now + duration)
             self._pause_reason = (reason or "")[:300]
+            self._next_probe_at = now + min(duration, self.PROBE_INTERVAL_SECONDS)
             self._cv.notify_all()
         resume_hhmm = time.strftime("%H:%M", time.localtime(self._paused_until))
         logging.warning(
@@ -513,10 +537,12 @@ class DownloadManager:
             resume_hhmm,
             self._pause_reason,
         )
+        probe_hhmm = time.strftime("%H:%M", time.localtime(self._next_probe_at))
         self._emitir_notificacao_simples(
             f"Downloads PAUSADOS por {duration // 3600}h: o YouTube bloqueou "
             "temporariamente por excesso de downloads. "
-            f"Voltam sozinhos às {resume_hhmm}.",
+            f"Teste automático às {probe_hhmm} — se o YouTube liberar, "
+            "a fila volta na hora.",
             tipo="danger",
         )
         self._persist_queue_state()
@@ -527,15 +553,29 @@ class DownloadManager:
         with self._cv:
             self._paused_until = 0.0
             self._pause_reason = ""
+            self._next_probe_at = 0.0
             self._cv.notify_all()
         logging.info("[V99] pausa de downloads cancelada manualmente (resume_now)")
         self._persist_queue_state()
 
     def _on_download_success(self) -> None:
-        """Um download completou com sucesso: reseta o nivel progressivo."""
+        """Um download completou com sucesso: reseta o nivel progressivo.
+        [V104] Se ainda estava pausado, o teste provou que o YouTube
+        liberou: destrava a pausa e a fila inteira volta a andar."""
         if self._pause_level:
             logging.info("[V99] download com sucesso: reset do nivel de pausa (era %d)", self._pause_level)
             self._pause_level = 0
+        if self.is_paused():
+            logging.info("[V104] TESTE passou: YouTube liberou, retomando a fila (%d restantes)", len(self.pending_downloads))
+            with self._cv:
+                self._paused_until = 0.0
+                self._pause_reason = ""
+                self._next_probe_at = 0.0
+                self._cv.notify_all()
+            self._emitir_notificacao_simples(
+                "YouTube liberou: downloads retomados automaticamente.",
+                tipo="success",
+            )
 
     def restore_requests(self, items: list[dict], paused_until: float | None = None) -> int:
         """Re-importa requests de download (ex.: snapshot dos ~170 bloqueados).
@@ -805,11 +845,22 @@ class DownloadManager:
         """
         while True:
             with self._cv:
-                while not self.pending_downloads or self.is_paused():
+                # Dorme enquanto nao ha item, ou enquanto pausado sem teste
+                # devendo. Acorda no instante do teste OU no fim da pausa,
+                # o que vier primeiro.
+                while not self.pending_downloads or (self.is_paused() and not self._probe_due()):
                     wait_s = 60.0
                     if self.is_paused():
-                        wait_s = min(60.0, max(1.0, self._paused_until - time.time()))
+                        until = self._paused_until
+                        if self._next_probe_at:
+                            until = min(until, self._next_probe_at)
+                        wait_s = min(60.0, max(1.0, until - time.time()))
                     self._cv.wait(timeout=wait_s)
+                probing = self.is_paused()
+                if probing:
+                    # Consome o teste agendado; o proximo e marcado apos o resultado.
+                    self._next_probe_at = self._paused_until
+                    logging.info("[V104] teste automatico: sondando o YouTube com 1 download")
                 download_request = self.pending_downloads.pop(0)
                 self._active_request = download_request
                 self._is_downloading = True
@@ -851,6 +902,17 @@ class DownloadManager:
             # e a pausa foi aplicada — nao conta como falha nem como sucesso.
             if rc == 0:
                 self._on_download_success()
+            if probing:
+                # [V104] Teste concluido (sucesso, bloqueio ou erro comum):
+                # se ainda pausado, marca o proximo teste em 1h; se o
+                # sucesso destravou, nao ha mais o que agendar.
+                with self._cv:
+                    self._next_probe_at = (
+                        time.time() + self.PROBE_INTERVAL_SECONDS
+                        if self.is_paused()
+                        else 0.0
+                    )
+                    self._cv.notify_all()
             self._persist_queue_state()
 
             # [V99] Espacamento entre downloads para nao re-triggerar o
@@ -1282,6 +1344,19 @@ class DownloadManager:
             }
         with self._cv:
             self.pending_downloads.insert(0, request)
+            if self.is_paused():
+                # [V104] Foi um TESTE automatico durante a pausa: a tentativa
+                # falhou, mas isso NAO reinicia o prazo (a pausa continua ate
+                # a mesma hora) nem sobe o nivel. So agenda o proximo teste.
+                self._next_probe_at = time.time() + self.PROBE_INTERVAL_SECONDS
+                probe_hhmm = time.strftime("%H:%M", time.localtime(self._next_probe_at))
+                logging.warning(
+                    "[V104] teste falhou: YouTube ainda bloqueado. Proximo teste as %s. "
+                    "Prazo da pausa inalterado.", probe_hhmm,
+                )
+                self._cv.notify_all()
+                self._persist_queue_state()
+                return self.RC_YOUTUBE_BLOCKED
         logging.warning(
             "[V99] bloqueio do YouTube detectado; item devolvido ao inicio da fila: %s",
             request["display_title"],

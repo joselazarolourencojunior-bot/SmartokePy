@@ -622,7 +622,10 @@
             if (!_showCounter) {
               el.style.display = "none";
             } else if (st && st.paused) {
-              var txt = "\u26D4 Downloads parados: o YouTube bloqueou temporariamente por excesso de downloads. Voltam automaticamente \u00E0s " + _fmtHHMM(st.paused_until) + " (" + faltam + " para baixar).";
+              var quando = (st.next_probe_at && st.next_probe_at < st.paused_until)
+                ? "Teste autom\u00E1tico \u00E0s " + _fmtHHMM(st.next_probe_at) + "; se continuar bloqueado, libera \u00E0s " + _fmtHHMM(st.paused_until)
+                : "Voltam automaticamente \u00E0s " + _fmtHHMM(st.paused_until);
+              var txt = "\u26D4 Downloads parados: o YouTube bloqueou temporariamente por excesso de downloads. " + quando + " (" + faltam + " para baixar).";
               if (span) span.textContent = txt;
               if (btn) btn.style.display = "";
               el.style.background = "#d32f2f";
