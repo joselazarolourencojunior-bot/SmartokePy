@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 
 class EventSystem:
     """Minimal event dispatcher to decouple components from socketio/flash.
@@ -19,6 +21,12 @@ class EventSystem:
         self._handlers[event_name].append(handler)
 
     def emit(self, event_name: str, *args, **kwargs) -> None:
-        """Call all handlers registered for this event."""
+        """Call all handlers registered for this event.
+
+        [V100] A failing handler is logged and does not prevent the others from running.
+        """
         for handler in self._handlers.get(event_name, []):
-            handler(*args, **kwargs)
+            try:
+                handler(*args, **kwargs)
+            except Exception:
+                logging.exception("Event handler for %r failed", event_name)

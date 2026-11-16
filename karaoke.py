@@ -429,11 +429,17 @@ class Karaoke:
             "playback_started",
             lambda: _fase2_refresh_singer_statuses_from_queue()
         )
-        self.events.on("song_ended", self.update_now_playing_socket)
+        # [V100] song_ended vem com payload {"reason": ...} (playback_controller.end_song);
+        # os handlers precisam aceita-lo, senao o 1o quebra com TypeError e os seguintes
+        # nunca rodam.
+        self.events.on("song_ended", lambda *_a, **_k: self.update_now_playing_socket())
         # CORRETO: song_ended → marca o user como SUNG (ja cantou de verdade) + refresh
         self.events.on(
             "song_ended",
-            lambda: (_fase2_mark_singer_sung_now(), _fase2_refresh_singer_statuses_from_queue())
+            lambda payload=None, *_a, **_k: (
+                _fase2_mark_singer_sung_now(payload),
+                _fase2_refresh_singer_statuses_from_queue(),
+            )
         )
 
         # [V11 FIX-A BUG2 SEM SOM] Novo evento: stream URL mudou por RETRY do FFmpeg
