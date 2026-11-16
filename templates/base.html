@@ -628,9 +628,14 @@
               el.style.background = "#d32f2f";
               el.style.display = "block";
             } else if (n > 0) {
-              var agora = st.active_title
-                ? " \u2014 agora: " + st.active_title + (st.active_progress ? " (" + Math.round(st.active_progress) + "%)" : "")
-                : "";
+              var agora = "";
+              if (st.active_title) {
+                agora = " \u2014 agora: " + st.active_title
+                  + " (" + Math.round(st.active_progress || 0) + "%"
+                  + (st.active_speed ? " \u00B7 " + st.active_speed : "")
+                  + (st.active_eta && st.active_eta !== "--:--" ? " \u00B7 faltam " + st.active_eta : "")
+                  + ")";
+              }
               if (span) span.textContent = "\u2B07 Baixando: " + faltam + agora;
               if (btn) btn.style.display = "none";
               el.style.background = "#1565c0";
@@ -646,9 +651,17 @@
         if (btn && !btn._v99bound) {
           btn._v99bound = true;
           btn.addEventListener("click", function () {
+            // [V103] Feedback imediato: desabilita e mostra "Tentando..." para
+            // o clique nao parecer ignorado. Se o YouTube ainda estiver
+            // bloqueando, o proximo poll mostra a tarja vermelha de novo.
+            btn.disabled = true;
+            var old = btn.textContent;
+            btn.textContent = "Tentando...";
+            var restore = function () { btn.disabled = false; btn.textContent = old; };
             fetch("/queue/downloads/resume", { method: "POST" })
-              .then(function () { setTimeout(_pollDownloadPause, 500); })
-              .catch(function () {});
+              .then(function () { _pollDownloadPause(); setTimeout(_pollDownloadPause, 3000); setTimeout(_pollDownloadPause, 8000); })
+              .catch(function () {})
+              .finally(function () { setTimeout(restore, 9000); });
           });
         }
         _pollDownloadPause();

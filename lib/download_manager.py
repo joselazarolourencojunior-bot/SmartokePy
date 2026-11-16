@@ -407,6 +407,8 @@ class DownloadManager:
             "remaining": len(self.pending_downloads) + (1 if active else 0),
             "active_title": (active or {}).get("title"),
             "active_progress": (active or {}).get("progress"),
+            "active_speed": (active or {}).get("speed"),
+            "active_eta": (active or {}).get("eta"),
             "paused": paused,
             "paused_until": self._paused_until if paused else 0.0,
         }
