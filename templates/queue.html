@@ -337,6 +337,7 @@
       // Clean up existing timer if any
       if (window.downloadPollTimer) {
           clearTimeout(window.downloadPollTimer);
+          window.downloadPollTimer = null;
       }
 
       // Stop if we left the page
@@ -344,9 +345,29 @@
           return;
       }
 
-      $.get('{{ url_for("queue.get_current_downloads") }}', function(data) {
+      // In-flight guard: never run two poll requests in parallel
+      // (focus/visibilitychange/socket handlers can fire while a request is pending)
+      if (window.downloadPollInFlight) {
+          return;
+      }
+      window.downloadPollInFlight = true;
+
+      $.get('{{ url_for("queue.get_current_downloads") }}')
+      .done(function(data) {
           var status = JSON.parse(data);
-          var html = "";
+
+          // Decide the next poll interval from the parsed status:
+          // active -> 1s; only pending (e.g. paused downloads) -> 5s; nothing -> stop.
+          var hasActive = !!status.active;
+          var pendingCount = (status.pending && status.pending.length) || 0;
+          var pollInterval = hasActive ? 1000 : (pendingCount > 0 ? 5000 : 0);
+
+          // Skip ALL DOM work if the raw payload is identical to the last one
+          // (when downloads are paused the 47KB pending list never changes,
+          //  so rebuilding 165 boxes every poll was pure flicker/CPU waste).
+          if (data !== window.downloadsLastRaw) {
+              window.downloadsLastRaw = data;
+              var html = "";
 
           if (status.active) {
               var d = status.active;
@@ -372,8 +393,11 @@
           }
 
           if (status.pending && status.pending.length > 0) {
-              html += `<div class="content"><h5 class="title is-6 mb-2">{{ _('Pending downloads') }}</h5>`;
-              status.pending.forEach(function(d) {
+              html += `<div class="content"><h5 class="title is-6 mb-2">{{ _('Pending downloads') }} (` + status.pending.length + `)</h5>`;
+              // Cap rendered pending boxes at 15 (paused downloads can leave
+              // hundreds pending — rendering all of them froze the page).
+              var pendingToShow = status.pending.slice(0, 15);
+              pendingToShow.forEach(function(d) {
                   html += `
                       <div class="box mb-2 p-3 has-background-dark is-flex is-align-items-center">
                           <span class="has-text-grey">${d.display_title || d.video_url}</span>
@@ -381,6 +405,14 @@
                       </div>
                   `;
               });
+              var pendingRest = status.pending.length - 15;
+              if (pendingRest > 0) {
+                  html += `
+                      <div class="box mb-2 p-3 has-background-dark is-flex is-align-items-center">
+                          <span class="has-text-grey">+ ${pendingRest} músicas aguardando download</span>
+                      </div>
+                  `;
+              }
               html += `</div>`;
           }
 
@@ -416,18 +448,32 @@
 
           if (html) {
               $("#downloads-container").html(html);
-              $("#downloads-section").fadeIn();
+              // Only fade in once — re-fading a visible section on every poll causes flicker
+              if (!$("#downloads-section").is(":visible")) {
+                  $("#downloads-section").fadeIn();
+              }
           } else {
-              $("#downloads-section").fadeOut();
+              if ($("#downloads-section").is(":visible")) {
+                  $("#downloads-section").fadeOut();
+              }
+          }
           }
 
           // Continue polling only if there are active items or pending downloads
-          // Error items don't need constant polling
-          var shouldPoll = status.active || (status.pending && status.pending.length > 0);
-
-          if (shouldPoll && $('#downloads-section').length > 0) {
-              window.downloadPollTimer = setTimeout(window.queuePage_getDownloads, 500);
+          // (active -> 1s; pending-only e.g. paused -> 5s; nothing -> stop).
+          // Error items don't need constant polling.
+          if (pollInterval > 0 && $('#downloads-section').length > 0) {
+              window.downloadPollTimer = setTimeout(window.queuePage_getDownloads, pollInterval);
           }
+      })
+      .fail(function() {
+          // A failed request must not kill the loop — retry slowly
+          if ($('#downloads-section').length > 0) {
+              window.downloadPollTimer = setTimeout(window.queuePage_getDownloads, 5000);
+          }
+      })
+      .always(function() {
+          window.downloadPollInFlight = false;
       });
   };
 
@@ -445,10 +491,14 @@
    // Socket listeners for download activity
   window.socket.off("download_started");
   window.socket.on("download_started", function() {
-      // Start polling if not already running
-      if (!window.downloadPollTimer) {
-          window.queuePage_getDownloads();
+      // Always kick a fresh poll cycle: a new download means an active item
+      // appeared, so restart immediately at the fast interval.
+      // (The in-flight guard in getDownloads prevents parallel requests.)
+      if (window.downloadPollTimer) {
+          clearTimeout(window.downloadPollTimer);
+          window.downloadPollTimer = null;
       }
+      window.queuePage_getDownloads();
   });
 
   window.socket.off("download_stopped");
@@ -631,12 +681,12 @@
   // possivel e chamar a pessoa CERTA (nao chamar pessoa errada por tela desatualizada).
   try {
     window.addEventListener("focus", function(){
-      try { window.queuePageState.previousQueue = null; window.queuePageState.previousNowPlaying = null; } catch(_){}
+      try { window.queuePageState.previousQueue = null; window.queuePageState.previousNowPlaying = null; window.downloadsLastRaw = null; } catch(_){}
       try { window.queuePage_getQueue(); window.queuePage_getDownloads(); } catch(_){}
     });
     document.addEventListener("visibilitychange", function(){
       if (document.visibilityState === "visible") {
-        try { window.queuePageState.previousQueue = null; window.queuePageState.previousNowPlaying = null; } catch(_){}
+        try { window.queuePageState.previousQueue = null; window.queuePageState.previousNowPlaying = null; window.downloadsLastRaw = null; } catch(_){}
         try { window.queuePage_getQueue(); window.queuePage_getDownloads(); } catch(_){}
       }
     });
