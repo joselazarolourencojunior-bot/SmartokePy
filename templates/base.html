@@ -591,6 +591,60 @@
 
 <body>
 
+  <!-- [V99] Banner global: aparece em TODAS as paginas quando o YouTube
+       bloqueou o Dell e os downloads estao pausados. Fica FORA do .box para
+       sobreviver a navegacao SPA (spa-navigation.js so troca o .box). -->
+  <div id="download-paused-banner" style="display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 1000000; background: #d32f2f; color: #fff; padding: 6px 12px; text-align: center; font-weight: 600; font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,.4);">
+    <span id="download-paused-banner-text"></span>
+    <button id="download-paused-resume-btn" type="button" style="margin-left: 10px; background: #fff; color: #d32f2f; border: 0; border-radius: 4px; padding: 2px 10px; cursor: pointer; font-weight: 700;">Tentar agora</button>
+  </div>
+  <script>
+    (function () {
+      function _fmtHHMM(epochSec) {
+        try {
+          var d = new Date(epochSec * 1000);
+          return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+        } catch (e) { return "--:--"; }
+      }
+      function _pollDownloadPause() {
+        fetch("/queue/downloads", { cache: "no-store" })
+          .then(function (r) { return r.json(); })
+          .then(function (st) {
+            var el = document.getElementById("download-paused-banner");
+            if (!el) return;
+            if (st && st.paused) {
+              var n = (st.pending ? st.pending.length : 0) + (st.active ? 1 : 0);
+              var txt = "\u26D4 Downloads parados: o YouTube bloqueou temporariamente por excesso de downloads. Voltam automaticamente \u00E0s " + _fmtHHMM(st.paused_until) + " (" + n + " m\u00FAsicas aguardando).";
+              var span = document.getElementById("download-paused-banner-text");
+              if (span) span.textContent = txt;
+              el.style.display = "block";
+            } else {
+              el.style.display = "none";
+            }
+          })
+          .catch(function () { /* silencioso: tenta de novo no proximo poll */ });
+      }
+      function _initDownloadPauseBanner() {
+        var btn = document.getElementById("download-paused-resume-btn");
+        if (btn && !btn._v99bound) {
+          btn._v99bound = true;
+          btn.addEventListener("click", function () {
+            fetch("/queue/downloads/resume", { method: "POST" })
+              .then(function () { setTimeout(_pollDownloadPause, 500); })
+              .catch(function () {});
+          });
+        }
+        _pollDownloadPause();
+        setInterval(_pollDownloadPause, 30000);
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", _initDownloadPauseBanner);
+      } else {
+        _initDownloadPauseBanner();
+      }
+    })();
+  </script>
+
   {% if not blank_page %}
   <div class="container" style="padding: 5px; max-width: 900px;">
     <nav class="navbar" role="navigation" aria-label="main navigation">

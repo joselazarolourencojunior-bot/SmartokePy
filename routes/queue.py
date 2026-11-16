@@ -335,6 +335,31 @@ def get_current_downloads():
     return json.dumps(status)
 
 
+@queue_bp.route("/queue/downloads/resume", methods=["POST"])
+def resume_downloads():
+    """[V99] 'Tentar agora': cancela a pausa por bloqueio do YouTube e acorda o worker."""
+    k = get_karaoke_instance()
+    k.download_manager.resume_now()
+    return json.dumps({"success": True})
+
+
+@queue_bp.route("/queue/downloads/restore", methods=["POST"])
+def restore_downloads():
+    """[V99] Re-importa requests de download de um snapshot JSON (admin/local only).
+
+    Body: {"items": [{video_url, user, title, display_title, enqueue}],
+           "paused_until": float | null}
+    """
+    if request.remote_addr not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+        return json.dumps({"success": False, "error": "Forbidden"}), 403
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items") or []
+    paused_until = payload.get("paused_until")
+    k = get_karaoke_instance()
+    added = k.download_manager.restore_requests(items, paused_until)
+    return json.dumps({"success": True, "added": added})
+
+
 @queue_bp.route("/queue/downloads/errors/<error_id>", methods=["DELETE"])
 def delete_download_error(error_id):
     """Remove a download error from the list."""

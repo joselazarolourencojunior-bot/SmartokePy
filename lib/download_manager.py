@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import re
@@ -10,13 +11,14 @@ import subprocess
 import time
 import uuid
 from queue import Empty, Queue
-from threading import Thread
+from threading import Condition, Thread
 
 from pikaraoke.lib.events import EventSystem
 from pikaraoke.lib.preference_manager import PreferenceManager
 from pikaraoke.lib.queue_manager import QueueManager
 from pikaraoke.lib.song_manager import SongManager
 from pikaraoke.lib.ffmpeg import validate_media_file
+from pikaraoke.lib.get_platform import get_data_directory
 from pikaraoke.lib.metadata_parser import normalize_for_comparison, regex_tidy
 from pikaraoke.lib.youtube_dl import (
     build_ytdl_download_command,
@@ -34,8 +36,70 @@ class DownloadManager:
     by ensuring only one download runs at a time.
 
     Attributes:
-        download_queue: Queue holding pending download requests.
+        pending_downloads: List of pending download requests (single source of
+            truth for the FIFO queue, guarded by self._cv).
     """
+
+    # [V99] Pausa PROGRESSIVA quando o YouTube bloqueia o Dell por rate-limit
+    # ou bot-check: 1o bloqueio pausa 1h, depois 2h, 4h e 8h (teto). Um download
+    # com SUCESSO reseta o nivel para 0. "Tentar agora" (resume_now) limpa a
+    # pausa MAS mantem o nivel (o proximo bloqueio continua a escalada).
+    PAUSE_STEPS_SECONDS: list[int] = [1 * 3600, 2 * 3600, 4 * 3600, 8 * 3600]
+    # Intervalo minimo entre um download e o proximo (espacamento para nao
+    # re-triggerar o rate-limit do YouTube).
+    DOWNLOAD_GAP_SECONDS: float = 30.0
+    # Return code sentinela de _execute_download quando o item foi devolvido
+    # para a fila por bloqueio do YouTube (nao conta como falha).
+    RC_YOUTUBE_BLOCKED: int = -429
+    # Return code sentinela quando um download LENTO foi adiado 5 posicoes.
+    RC_DEFERRED: int = -5
+    # [V99 LENTO] Adiamento de download lento: so avalia depois de
+    # SLOW_CHECK_AFTER_SECONDS; adia se ETA > SLOW_ETA_LIMIT_SECONDS ou se nao
+    # chegou a 1% de progresso em SLOW_NO_PROGRESS_SECONDS. Cada item pode ser
+    # adiado no maximo MAX_DEFERS vezes (depois baixa ate o fim, evita starvation).
+    SLOW_CHECK_AFTER_SECONDS: float = 45.0
+    SLOW_ETA_LIMIT_SECONDS: float = 300.0
+    SLOW_NO_PROGRESS_SECONDS: float = 120.0
+    MAX_DEFERS: int = 2
+    QUEUE_STATE_FILENAME = "download_queue_state.json"
+
+    @staticmethod
+    def _is_youtube_block(raw_output: str) -> bool:
+        """True se a saida do yt-dlp indica BLOQUEIO do Dell pelo YouTube
+        (rate-limit global ou bot check), NAO erro de um video especifico.
+        Propositalmente NAO inclui 403 generico nem 'unable to download video
+        data' (esses sao por-video)."""
+        low = (raw_output or "").casefold()
+        return any(
+            tok in low
+            for tok in (
+                "rate-limited by youtube",
+                "has been rate-limited",
+                "http error 429",
+                "too many requests",
+                "confirm you're not a bot",
+                "confirm you’re not a bot",
+                "not a bot",
+            )
+        )
+
+    @staticmethod
+    def _parse_eta_seconds(eta: str) -> int | None:
+        """Converte ETA do yt-dlp ('00:12', '05:31', '1:02:03') em segundos.
+        '--:--', 'Unknown', vazio ou formato invalido retornam None."""
+        s = (eta or "").strip()
+        if not s or s.casefold() in ("--:--", "unknown"):
+            return None
+        parts = s.split(":")
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return None
+        if len(nums) == 2:
+            return nums[0] * 60 + nums[1]
+        if len(nums) == 3:
+            return nums[0] * 3600 + nums[1] * 60 + nums[2]
+        return None
 
     # ============================================================
     # TRADUCOES PT-BR: dicionario para mensagens de erro de download
@@ -266,10 +330,18 @@ class DownloadManager:
         self._download_path = download_path
         self._youtubedl_proxy = youtubedl_proxy
         self._additional_ytdl_args = additional_ytdl_args
-        self.download_queue: Queue = Queue()
-        self.pending_downloads: list[dict] = []  # Shadow queue for visibility
+        # [V99] Fila unica: pending_downloads eh a unica fonte de verdade
+        # (FIFO). Guardada por _cv; o worker espera nela e tambem acorda
+        # quando a pausa termina ou resume_now eh chamado.
+        self._cv = Condition()
+        self.pending_downloads: list[dict] = []
         self.download_errors: list[dict] = []  # Track failed downloads
         self.active_download: dict | None = None
+        self._active_request: dict | None = None  # request em processamento
+        # [V99] Estado da pausa por bloqueio do YouTube
+        self._paused_until: float = 0.0
+        self._pause_reason: str = ""
+        self._pause_level: int = 0
         self._worker_thread: Thread | None = None
         self._is_downloading: bool = False  # Track if a download is currently in progress
         self._download_stall_timeout: int = 600  # [V-DOWNLOAD-UNLOCK] Antes 180s = 3min, agora 600s = 10min. NUNCA MAIS aborta download por demora de buffering do YouTube (arquivos grandes).
@@ -304,7 +376,8 @@ class DownloadManager:
         )
 
     def start(self) -> None:
-        """Start the download worker thread."""
+        """Load persisted queue state, then start the download worker thread."""
+        self._load_queue_state()
         self._worker_thread = Thread(target=self._process_queue, daemon=True)
         self._worker_thread.start()
         logging.debug("Download queue worker started")
@@ -315,11 +388,233 @@ class DownloadManager:
         Returns:
             Dict containing 'active' download info and list of 'pending' downloads.
         """
+        paused = self.is_paused()
         return {
             "active": self.active_download,
             "pending": self.pending_downloads,
             "errors": self.download_errors,
+            "paused": paused,
+            "paused_until": self._paused_until if paused else 0.0,
+            "pause_reason": self._pause_reason,
+            "pause_level": self._pause_level,
         }
+
+    # ============================================================
+    # [V99] PAUSA POR BLOQUEIO DO YOUTUBE + PERSISTENCIA DA FILA
+    # ============================================================
+
+    def is_paused(self) -> bool:
+        """True se os downloads estao pausados por bloqueio do YouTube."""
+        return time.time() < self._paused_until
+
+    def _queue_state_path(self) -> str:
+        return os.path.join(get_data_directory(), self.QUEUE_STATE_FILENAME)
+
+    def _persist_queue_state(self) -> None:
+        """Grava a fila + estado de pausa em JSON de forma atomica (tmp + replace).
+        Inclui o request ATIVO no inicio de 'pending' para que um restart no
+        meio de um download nao perca o item."""
+        try:
+            items = []
+            if self._active_request:
+                items.append(self._active_request)
+            # itens re-enfileirados (bloqueio/lentidao) podem ser o MESMO
+            # objeto do _active_request: dedup por identidade
+            items.extend(
+                it for it in self.pending_downloads if it is not self._active_request
+            )
+            state = {
+                "pending": items,
+                "paused_until": self._paused_until,
+                "pause_reason": self._pause_reason,
+                "pause_level": self._pause_level,
+            }
+            path = self._queue_state_path()
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False)
+            os.replace(tmp_path, path)
+        except Exception as e:
+            logging.warning("[V99] falha ao persistir fila de downloads: %s", e)
+
+    def _load_queue_state(self) -> None:
+        """Restaura fila e pausa do JSON persistido (chamado em start())."""
+        path = self._queue_state_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                state = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            logging.warning("[V99] arquivo de fila invalido, ignorando: %s", e)
+            return
+        try:
+            self._paused_until = float(state.get("paused_until") or 0.0)
+            if self._paused_until <= time.time():
+                self._paused_until = 0.0
+            self._pause_reason = str(state.get("pause_reason") or "")
+            self._pause_level = int(state.get("pause_level") or 0)
+        except Exception:
+            self._paused_until, self._pause_reason, self._pause_level = 0.0, "", 0
+        seen: set[str] = set()
+        loaded: list[dict] = []
+        for item in state.get("pending") or []:
+            url = (item or {}).get("video_url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            try:
+                if self._find_existing_library_match(url, item.get("title")):
+                    logging.info("[V99] ignorando item persistido ja na biblioteca: %s", url)
+                    continue
+            except Exception:
+                pass
+            loaded.append(item)
+        if loaded:
+            self.pending_downloads = loaded
+            logging.info("[V99] restaurados %d downloads pendentes do disco", len(loaded))
+        if self.is_paused():
+            logging.info(
+                "[V99] pausa de downloads ainda ativa ate %s",
+                time.strftime("%H:%M", time.localtime(self._paused_until)),
+            )
+
+    def pause_for_block(self, reason: str, at: float | None = None) -> None:
+        """Pausa TODOS os downloads por bloqueio do YouTube (progressivo:
+        1h -> 2h -> 4h -> 8h). So estende a pausa, nunca encurta."""
+        now = time.time() if at is None else at
+        duration = self.PAUSE_STEPS_SECONDS[
+            min(self._pause_level, len(self.PAUSE_STEPS_SECONDS) - 1)
+        ]
+        self._pause_level += 1
+        with self._cv:
+            self._paused_until = max(self._paused_until, now + duration)
+            self._pause_reason = (reason or "")[:300]
+            self._cv.notify_all()
+        resume_hhmm = time.strftime("%H:%M", time.localtime(self._paused_until))
+        logging.warning(
+            "[V99] YouTube bloqueou o Dell (nivel %d). Downloads pausados por %dh ate %s. Motivo: %s",
+            self._pause_level,
+            duration // 3600,
+            resume_hhmm,
+            self._pause_reason,
+        )
+        self._emitir_notificacao_simples(
+            f"Downloads PAUSADOS por {duration // 3600}h: o YouTube bloqueou "
+            "temporariamente por excesso de downloads. "
+            f"Voltam sozinhos às {resume_hhmm}.",
+            tipo="danger",
+        )
+        self._persist_queue_state()
+
+    def resume_now(self) -> None:
+        """'Tentar agora': limpa a pausa atual e acorda o worker.
+        NAO reseta o _pause_level (o proximo bloqueio continua a escalada)."""
+        with self._cv:
+            self._paused_until = 0.0
+            self._pause_reason = ""
+            self._cv.notify_all()
+        logging.info("[V99] pausa de downloads cancelada manualmente (resume_now)")
+        self._persist_queue_state()
+
+    def _on_download_success(self) -> None:
+        """Um download completou com sucesso: reseta o nivel progressivo."""
+        if self._pause_level:
+            logging.info("[V99] download com sucesso: reset do nivel de pausa (era %d)", self._pause_level)
+            self._pause_level = 0
+
+    def restore_requests(self, items: list[dict], paused_until: float | None = None) -> int:
+        """Re-importa requests de download (ex.: snapshot dos ~170 bloqueados).
+        Dedup por video_url contra fila+ativo e pula o que ja esta na biblioteca.
+        Remove de download_errors os erros cujas URLs foram restauradas.
+        Retorna quantos itens foram adicionados."""
+        added = 0
+        restored_urls: set[str] = set()
+        with self._cv:
+            existing_urls = {d.get("video_url") for d in self.pending_downloads}
+            if self._active_request:
+                existing_urls.add(self._active_request.get("video_url"))
+            for item in items or []:
+                url = (item or {}).get("video_url")
+                if not url or url in existing_urls:
+                    continue
+                try:
+                    if self._find_existing_library_match(url, item.get("title")):
+                        continue
+                except Exception:
+                    pass
+                req = {
+                    "video_url": url,
+                    "enqueue": bool(item.get("enqueue")),
+                    "user": item.get("user") or "Pikaraoke",
+                    "title": item.get("title"),
+                    "display_title": item.get("display_title") or item.get("title") or url,
+                    "defer_count": int(item.get("defer_count") or 0),
+                }
+                self.pending_downloads.append(req)
+                existing_urls.add(url)
+                restored_urls.add(url)
+                added += 1
+            if paused_until:
+                self._paused_until = max(self._paused_until, float(paused_until))
+            self._cv.notify_all()
+        if restored_urls:
+            self.download_errors = [
+                e for e in self.download_errors if e.get("url") not in restored_urls
+            ]
+        if added or paused_until:
+            self._persist_queue_state()
+        return added
+
+    def _should_defer_slow(
+        self, started_at: float, eta_s: int | None, pct: float, request: dict | None
+    ) -> bool:
+        """[V99 LENTO] True se o download em andamento esta lento demais e deve
+        ser adiado 5 posicoes na fila. So adia se: passou SLOW_CHECK_AFTER_SECONDS
+        desde o inicio do processo, defer_count < MAX_DEFERS e existe outro item
+        esperando na fila."""
+        if time.monotonic() - started_at < self.SLOW_CHECK_AFTER_SECONDS:
+            return False
+        if int((request or {}).get("defer_count") or 0) >= self.MAX_DEFERS:
+            return False
+        if not self.pending_downloads:
+            return False
+        if eta_s is not None and eta_s > self.SLOW_ETA_LIMIT_SECONDS:
+            return True
+        if (
+            time.monotonic() - started_at >= self.SLOW_NO_PROGRESS_SECONDS
+            and pct < 1.0
+        ):
+            return True
+        return False
+
+    def _defer_slow_download(
+        self, request: dict, process, displayed_title: str
+    ) -> int:
+        """[V99 LENTO] Mata o yt-dlp atual e reinsere o request 5 posicoes
+        abaixo na fila para dar preferencia as proximas musicas. O .part fica
+        no disco (yt-dlp roda com --continue) e a proxima tentativa retoma."""
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except Exception:
+            pass
+        request["defer_count"] = int(request.get("defer_count") or 0) + 1
+        with self._cv:
+            idx = min(5, len(self.pending_downloads))
+            self.pending_downloads.insert(idx, request)
+        self._persist_queue_state()
+        logging.info(
+            "[V99 LENTO] %s adiada 5 posicoes (%d/%d)",
+            displayed_title,
+            request["defer_count"],
+            self.MAX_DEFERS,
+        )
+        self._emitir_notificacao_simples(
+            f"Download lento, adiado 5 posições para baixar outras antes: {displayed_title}",
+            tipo="info",
+        )
+        return self.RC_DEFERRED
 
     def remove_error(self, error_id: str) -> bool:
         """Remove an error from the list by ID.
@@ -446,9 +741,20 @@ class DownloadManager:
             )
 
         # Check how many items are ahead (in queue + currently downloading)
-        pending_count = self.download_queue.qsize() + (1 if self._is_downloading else 0)
+        with self._cv:
+            pending_count = len(self.pending_downloads) + (
+                1 if self._is_downloading else 0
+            )
+            paused = self.is_paused()
+            paused_until = self._paused_until
 
-        if pending_count > 0:
+        if paused:
+            resume_hhmm = time.strftime("%H:%M", time.localtime(paused_until))
+            self._emitir_notificacao_simples(
+                f"Download na fila (downloads pausados até {resume_hhmm}): {displayed_title}",
+                tipo="info",
+            )
+        elif pending_count > 0:
             self._emitir_notificacao_simples(
                 f"Download aguardando na fila (#{pending_count + 1}): {displayed_title}",
                 tipo="info",
@@ -458,7 +764,7 @@ class DownloadManager:
                 f"Download iniciado: {displayed_title}", tipo="info"
             )
 
-        if not self._is_downloading and self.download_queue.empty():
+        if not self._is_downloading and not self.pending_downloads:
             self._events.emit("download_started")
 
         download_data = {
@@ -469,28 +775,31 @@ class DownloadManager:
             "display_title": displayed_title,
         }
 
-        self.download_queue.put(download_data)
-        self.pending_downloads.append(download_data)
+        with self._cv:
+            self.pending_downloads.append(download_data)
+            self._cv.notify()
+        self._persist_queue_state()
 
         return ("queued", download_data["display_title"] or "OK")
 
     def _process_queue(self) -> None:
         """Worker thread that processes downloads from the queue serially.
 
-        Runs indefinitely, blocking on queue.get() until items are available.
-        Each download is processed completely before the next one starts.
+        Runs indefinitely, waiting on self._cv until items are available and
+        downloads are not paused. Each download is processed completely before
+        the next one starts, with DOWNLOAD_GAP_SECONDS of spacing between them.
         """
         while True:
-            download_request = self.download_queue.get()
-
-            # Remove from shadow queue
-            # Note: Since this is a single worker thread and append happens on main thread,
-            # we simply pop the first item as it corresponds to FIFO queue.
-            # In a multi-worker scenario, this would need a lock.
-            if self.pending_downloads:
-                self.pending_downloads.pop(0)
-
-            self._is_downloading = True
+            with self._cv:
+                while not self.pending_downloads or self.is_paused():
+                    wait_s = 60.0
+                    if self.is_paused():
+                        wait_s = min(60.0, max(1.0, self._paused_until - time.time()))
+                    self._cv.wait(timeout=wait_s)
+                download_request = self.pending_downloads.pop(0)
+                self._active_request = download_request
+                self._is_downloading = True
+            self._persist_queue_state()
 
             # Initialize active download state
             self.active_download = {
@@ -503,23 +812,39 @@ class DownloadManager:
                 "speed": "---",
             }
 
+            rc = 1
             try:
-                self._execute_download(
+                rc = self._execute_download(
                     download_request["video_url"],
                     download_request["enqueue"],
                     download_request["user"],
                     download_request["title"],
+                    download_request,
                 )
             except Exception as e:
                 logging.error(f"Error processing download: {e}")
             finally:
                 self._is_downloading = False
                 self.active_download = None
-                self.download_queue.task_done()
+                self._active_request = None
 
                 # Check if we are done with all downloads
-                if self.download_queue.empty():
+                if not self.pending_downloads:
                     self._events.emit("download_stopped")
+
+            # [V99] Sucesso reseta o nivel progressivo de pausa.
+            # rc == RC_YOUTUBE_BLOCKED: item ja foi devolvido ao inicio da fila
+            # e a pausa foi aplicada — nao conta como falha nem como sucesso.
+            if rc == 0:
+                self._on_download_success()
+            self._persist_queue_state()
+
+            # [V99] Espacamento entre downloads para nao re-triggerar o
+            # rate-limit do YouTube. Interrompivel via cv (resume/novo item).
+            # Sem gap apos um adiamento por lentidao: vai direto p/ o proximo.
+            if rc != self.RC_DEFERRED:
+                with self._cv:
+                    self._cv.wait(timeout=self.DOWNLOAD_GAP_SECONDS)
 
     def _execute_download(
         self,
@@ -527,6 +852,7 @@ class DownloadManager:
         enqueue: bool,
         user: str,
         title: str | None,
+        request: dict | None = None,
     ) -> int:
         """Execute a video download.
 
@@ -535,13 +861,25 @@ class DownloadManager:
             enqueue: Whether to add to queue after download.
             user: Username to attribute the download to.
             title: Display title (defaults to URL if not provided).
+            request: The queue request dict (mutated on defer: defer_count).
 
         Returns:
-            Return code from the download process (0 = success).
+            Return code from the download process (0 = success,
+            RC_YOUTUBE_BLOCKED = devolvido p/ fila por bloqueio,
+            RC_DEFERRED = adiado 5 posicoes por lentidao).
         """
         from flask_babel import _
 
         displayed_title = title if title else video_url
+        if request is None:
+            request = {
+                "video_url": video_url,
+                "enqueue": enqueue,
+                "user": user,
+                "title": title,
+                "display_title": displayed_title,
+                "defer_count": 0,
+            }
 
         # MSG: Message shown when download actually starts (after waiting in queue)
         self._events.emit("notification", _("Downloading video: %s") % displayed_title)
@@ -576,6 +914,10 @@ class DownloadManager:
         video_id = get_youtube_id_from_url(video_url)
         last_output_at = time.monotonic()
         terminated_for_stall = False
+        # [V99 LENTO] rastreio de lentidao do download em andamento
+        proc_started_at = time.monotonic()
+        last_eta_s: int | None = None
+        last_pct: float = 0.0
 
         def _read_stdout() -> None:
             if process.stdout is None:
@@ -592,6 +934,9 @@ class DownloadManager:
         Thread(target=_read_stdout, daemon=True).start()
 
         while True:
+            # [V99 LENTO] download lento demais e ha outros esperando -> adia
+            if self._should_defer_slow(proc_started_at, last_eta_s, last_pct, request):
+                return self._defer_slow_download(request, process, displayed_title)
             try:
                 line = output_queue.get(timeout=1)
             except Empty:
@@ -620,6 +965,10 @@ class DownloadManager:
                 percent = float(match.group(1))
                 speed = match.group(2)
                 eta = match.group(3)
+                last_pct = percent
+                parsed_eta = self._parse_eta_seconds(eta)
+                if parsed_eta is not None:
+                    last_eta_s = parsed_eta
 
                 self.active_download["progress"] = percent
                 self.active_download["status"] = "downloading"
@@ -647,6 +996,12 @@ class DownloadManager:
             )
 
         if rc != 0:
+            # [V99] BLOQUEIO DO YOUTUBE na 1a tentativa? Devolve o item para o
+            # inicio da fila, pausa tudo e sai SEM retry/erro permanente.
+            if self._is_youtube_block(output):
+                return self._handle_youtube_block(
+                    video_url, enqueue, user, title, output, request
+                )
             # [V52 - CORRECAO BUG NOTIFICACAO CONFUSA]
             # Antes: em cada falha do retry, ja mostrava notificacao danger
             # e gravava erro permanente mesmo depois de sucesso na tentativa 2/3.
@@ -691,6 +1046,10 @@ class DownloadManager:
                 q_r: Queue[str | None] = Queue()
                 last_r = time.monotonic()
                 stalled_r = False
+                # [V99 LENTO] mesma regra de adiamento vale nas tentativas de retry
+                started_r = time.monotonic()
+                eta_r: int | None = None
+                pct_r: float = 0.0
                 def _read_r():
                     if process_r.stdout is None:
                         q_r.put(None); return
@@ -702,6 +1061,8 @@ class DownloadManager:
                         q_r.put(None)
                 Thread(target=_read_r, daemon=True).start()
                 while True:
+                    if self._should_defer_slow(started_r, eta_r, pct_r, request):
+                        return self._defer_slow_download(request, process_r, displayed_title)
                     try: ln = q_r.get(timeout=1)
                     except Empty:
                         if process_r.poll() is not None: break
@@ -723,6 +1084,10 @@ class DownloadManager:
                         self.active_download["status"]   = "downloading"
                         self.active_download["speed"]    = mr.group(2)
                         self.active_download["eta"]      = mr.group(3)
+                        pct_r = float(mr.group(1))
+                        eta_r_parsed = self._parse_eta_seconds(mr.group(3))
+                        if eta_r_parsed is not None:
+                            eta_r = eta_r_parsed
                 try: rc_r = process_r.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process_r.kill(); rc_r = process_r.wait(timeout=5)
@@ -731,6 +1096,11 @@ class DownloadManager:
                 _rc_ultimo = rc_r
                 _stalled_ultimo = stalled_r
                 _tentou += 1
+                # [V99] BLOQUEIO DO YOUTUBE no retry? Mesma saida: fila + pausa.
+                if self._is_youtube_block(out_r):
+                    return self._handle_youtube_block(
+                        video_url, enqueue, user, title, out_r, request
+                    )
                 if rc_r == 0:
                     logging.info(
                         "[V52 RETRY SUCESSO] Download OK na tentativa %d/%d: %s",
@@ -871,3 +1241,36 @@ class DownloadManager:
                     )
 
         return rc
+
+    def _handle_youtube_block(
+        self,
+        video_url: str,
+        enqueue: bool,
+        user: str,
+        title: str | None,
+        raw_output: str,
+        request: dict | None = None,
+    ) -> int:
+        """[V99] O YouTube bloqueou o Dell (rate-limit/bot check): devolve o
+        request para o INICIO da fila (nao perde o item, nao vira erro
+        permanente) e aplica a pausa progressiva. Retorna RC_YOUTUBE_BLOCKED."""
+        reason = (
+            self._extrair_ultima_linha_de_erro(raw_output)
+            or "YouTube rate limit / bot check"
+        )
+        if request is None:
+            request = {
+                "video_url": video_url,
+                "enqueue": enqueue,
+                "user": user,
+                "title": title,
+                "display_title": title if title else video_url,
+            }
+        with self._cv:
+            self.pending_downloads.insert(0, request)
+        logging.warning(
+            "[V99] bloqueio do YouTube detectado; item devolvido ao inicio da fila: %s",
+            request["display_title"],
+        )
+        self.pause_for_block(reason)
+        return self.RC_YOUTUBE_BLOCKED
