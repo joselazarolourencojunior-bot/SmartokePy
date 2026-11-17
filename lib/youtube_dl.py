@@ -937,9 +937,15 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
             scored_results = [
                 (score, row) for score, row in scored_results if score >= -10
             ]
+        scored_results.sort(key=lambda item: item[0], reverse=True)
+        cap = 30
+        return [row for _, row in scored_results[:cap]]
 
-    scored_results.sort(key=lambda item: item[0], reverse=True)
-    cap = 30 if karaoke_only else 25
+    # [V105] Modo "non_karaoke" (checkbox 'Include non-karaoke matches'):
+    # NAO reordena — devolve na ORDEM ORIGINAL que o YouTube retornou,
+    # igual a busca do site youtube.com (sem contar a personalizacao da
+    # conta, que o Dell nao tem por ser anonimo).
+    cap = 25
     return [row for _, row in scored_results[:cap]]
 
 def _v90_helper_extract_itag(candidate: str) -> str:
