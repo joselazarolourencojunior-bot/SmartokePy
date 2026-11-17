@@ -2195,9 +2195,18 @@
 				trans %}Add to queue once downloaded{% endtrans %}
 			</label>
 		</div>
+		{# [V107] Barra de ordenacao: ordem do YouTube (padrao), mais vistos
+		   ou melhor pontuacao de karaokê — reordena no navegador, sem
+		   nova busca. #}
+		<div class="field is-grouped is-align-items-center mb-2" id="search-sort-bar" style="gap: 6px; flex-wrap: wrap;">
+			<span class="is-size-7 has-text-grey">Ordenar:</span>
+			<button type="button" class="button is-small is-link is-light search-sort-btn" data-sort="yt">Relevância (YouTube)</button>
+			<button type="button" class="button is-small is-light search-sort-btn" data-sort="views">Mais vistos</button>
+			<button type="button" class="button is-small is-light search-sort-btn" data-sort="score">Melhor karaokê</button>
+		</div>
 		<ul id="search-results" class="search_result_items">
-			{% for title,url,id,channel,duration in search_results %}
-			<li data-ytID="{{id}}" data-ytTitle="{{title}}" value="{{url}}" data-index="{{loop.index0}}">
+			{% for title,url,id,channel,duration,views,score in search_results %}
+			<li data-ytID="{{id}}" data-ytTitle="{{title}}" value="{{url}}" data-index="{{loop.index0}}" data-views="{{ views or 0 }}" data-score="{{ score or 0 }}">
 				<div class="img-wrapper" data-url="{{url}}">
 					<div class="img-frame">
 						<img src="https://img.youtube.com/vi/{{id}}/mqdefault.jpg" />
@@ -2208,6 +2217,7 @@
 					<div>
 						{{title}}
 						{% if channel %}<div class="is-size-7 has-text-grey">{{ channel }}</div>{% endif %}
+						{% if views and views|int > 0 %}<div class="is-size-7 has-text-grey-light">{% if views >= 1000000 %}{{ "%.1f"|format(views/1000000) }} mi{% elif views >= 1000 %}{{ views//1000 }} mil{% else %}{{ views }}{% endif %} visualizações</div>{% endif %}
 						<a href="{{url}}" target="_blank" rel="noopener noreferrer" class="is-size-7 has-text-info">YouTube ↗</a>
 					</div>
 					<button class="button search_result_items_download">Download</button>
@@ -2215,6 +2225,30 @@
 			</li>
 			{% endfor %}
 		</ul>
+		<script>
+		(function () {
+		  var bar = document.getElementById("search-sort-bar");
+		  var ul = document.getElementById("search-results");
+		  if (!bar || !ul) return;
+		  bar.addEventListener("click", function (e) {
+		    var btn = e.target && e.target.closest ? e.target.closest(".search-sort-btn") : null;
+		    if (!btn) return;
+		    var mode = btn.getAttribute("data-sort");
+		    var items = Array.prototype.slice.call(ul.querySelectorAll("li[data-ytID]"));
+		    items.sort(function (a, b) {
+		      if (mode === "views") return (parseInt(b.getAttribute("data-views")) || 0) - (parseInt(a.getAttribute("data-views")) || 0);
+		      if (mode === "score") return (parseFloat(b.getAttribute("data-score")) || 0) - (parseFloat(a.getAttribute("data-score")) || 0);
+		      return (parseInt(a.getAttribute("data-index")) || 0) - (parseInt(b.getAttribute("data-index")) || 0);
+		    });
+		    for (var i = 0; i < items.length; i++) ul.appendChild(items[i]);
+		    var btns = bar.querySelectorAll(".search-sort-btn");
+		    for (var j = 0; j < btns.length; j++) {
+		      if (btns[j] === btn) { btns[j].classList.add("is-link"); }
+		      else { btns[j].classList.remove("is-link"); }
+		    }
+		  });
+		})();
+		</script>
 		<div id="modal-js-example" class="modal">
 			<div class="modal-background"></div>
 			<div class="modal-content">

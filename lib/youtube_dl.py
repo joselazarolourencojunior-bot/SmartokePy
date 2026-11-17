@@ -833,7 +833,9 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
         "[V90.2 BUSCA] one pass: query=%r karaoke_only=%r", query, karaoke_only
     )
     requested_query = _build_search_query(query, karaoke_only)
-    num_results = 120 if karaoke_only else 60
+    # [V107] Busca mais ampla: 150 candidatos (YouTube continua paginando
+    # internamente; o yt-dlp faz as continuacoes necessarias).
+    num_results = 150
     yt_search = 'ytsearch' + str(num_results) + ':"' + requested_query + '"'
     cmd = yt_dlp_cmd + ["-j", "--no-playlist", "--flat-playlist", yt_search]
     logging.debug("yt-dlp search command (one-pass): " + " ".join(cmd))
@@ -919,6 +921,13 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
         if isinstance(duration_raw, (int, float)):
             seconds = int(duration_raw)
             duration_str = str(seconds // 60) + ":" + format(seconds % 60, "02d")
+        # [V107] view_count + score interno vao junto na linha, para a UI
+        # poder ordenar por "Mais vistos" ou "Melhor karaokê" no navegador.
+        _views = j.get("view_count")
+        try:
+            _views = int(_views) if _views else 0
+        except (TypeError, ValueError):
+            _views = 0
         row = [str(j["title"]), _v_url, _v_id, str(channel), duration_str]
 
         if karaoke_only:
@@ -929,7 +938,7 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
                     continue
 
         score = _score_search_result(row[0], str(channel), query, karaoke_only)
-        scored_results.append((score, row))
+        scored_results.append((score, row + [_views, score]))
 
     if karaoke_only:
         karaoke_matches = [row for score, row in scored_results if score >= -10]
@@ -938,14 +947,15 @@ def _do_one_search_pass(query: str, karaoke_only: bool) -> list[list[str]]:
                 (score, row) for score, row in scored_results if score >= -10
             ]
         scored_results.sort(key=lambda item: item[0], reverse=True)
-        cap = 30
+        cap = 60
         return [row for _, row in scored_results[:cap]]
 
     # [V105] Modo "non_karaoke" (checkbox 'Include non-karaoke matches'):
     # NAO reordena — devolve na ORDEM ORIGINAL que o YouTube retornou,
     # igual a busca do site youtube.com (sem contar a personalizacao da
     # conta, que o Dell nao tem por ser anonimo).
-    cap = 25
+    # [V107] cap 100: usuario pediu lista bem maior que os 25 de antes.
+    cap = 100
     return [row for _, row in scored_results[:cap]]
 
 def _v90_helper_extract_itag(candidate: str) -> str:
