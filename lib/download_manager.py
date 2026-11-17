@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -458,22 +459,46 @@ class DownloadManager:
             }
             path = self._queue_state_path()
             tmp_path = path + ".tmp"
+            # [V106] Contra queda de energia: fsync no arquivo ANTES do rename
+            # (grava fisicamente no disco) e copia .bak da versao anterior
+            # (se o principal corromper, _load_queue_state usa o .bak).
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                if os.path.exists(path):
+                    shutil.copy2(path, path + ".bak")
+            except Exception:
+                pass
             os.replace(tmp_path, path)
+            try:
+                dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except Exception:
+                pass
         except Exception as e:
             logging.warning("[V99] falha ao persistir fila de downloads: %s", e)
 
     def _load_queue_state(self) -> None:
         """Restaura fila e pausa do JSON persistido (chamado em start())."""
         path = self._queue_state_path()
-        try:
-            with open(path, encoding="utf-8") as f:
-                state = json.load(f)
-        except FileNotFoundError:
-            return
-        except Exception as e:
-            logging.warning("[V99] arquivo de fila invalido, ignorando: %s", e)
+        # [V106] Se o arquivo principal estiver ausente/corrompido, tenta o .bak
+        state = None
+        for candidate in (path, path + ".bak"):
+            try:
+                with open(candidate, encoding="utf-8") as f:
+                    state = json.load(f)
+                break
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                logging.warning("[V99] arquivo de fila invalido (%s): %s", candidate, e)
+                continue
+        if state is None:
             return
         try:
             self._paused_until = float(state.get("paused_until") or 0.0)
